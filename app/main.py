@@ -13,7 +13,7 @@ from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -219,12 +219,13 @@ def dashboard() -> FileResponse:
 
 
 @app.get("/api/health")
-def health() -> dict[str, Any]:
+def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     settings = get_settings()
     bm = BrowserManager.instance()
+    app_settings = get_app_settings(db)
     return {
         "ok": True,
-        "deepseek_configured": bool(settings.deepseek_api_key),
+        "deepseek_configured": bool(settings.deepseek_api_key or app_settings.get("api_key")),
         "model": settings.deepseek_model,
         "browser_running": bm.running,
         "browser_url": bm.page_url if bm.running else "",
@@ -522,7 +523,7 @@ async def upload_resume(
     raw_text = extract_resume_text(str(target), file.filename or target.name)
     settings = get_app_settings(db)
     analysis = await analyze_resume(
-        raw_text, model=settings.get("model"), base_url=settings.get("api_base_url")
+        raw_text, model=settings.get("model"), api_key=settings.get("api_key")
     )
 
     has_active = (
@@ -552,7 +553,7 @@ async def create_text_resume(
         raise HTTPException(status_code=400, detail="简历文本不能为空")
     settings = get_app_settings(db)
     analysis = await analyze_resume(
-        raw_text, model=settings.get("model"), base_url=settings.get("api_base_url")
+        raw_text, model=settings.get("model"), api_key=settings.get("api_key")
     )
     has_active = (
         db.scalar(select(func.count(Resume.id)).where(Resume.is_active.is_(True))) > 0
@@ -579,6 +580,26 @@ def list_resumes(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
 def active_resume(db: Session = Depends(get_db)) -> dict[str, Any]:
     return resume_to_dict(get_active_resume(db))
 
+
+@app.delete("/api/resumes/{resume_id}")
+def delete_resume(resume_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    resume = db.get(Resume, resume_id)
+    if not resume:
+        raise HTTPException(status_code=404, detail="简历不存在")
+    # Clear FK references from jobs and conversations using raw SQL
+    db.execute(text("UPDATE jobs SET resume_id = NULL WHERE resume_id = :rid"), {"rid": resume_id})
+    db.execute(text("UPDATE conversations SET resume_id = NULL WHERE resume_id = :rid"), {"rid": resume_id})
+    db.flush()
+    # If this was the active resume, clear it from settings
+    settings = get_app_settings(db)
+    if settings.get("active_resume_id") == resume_id:
+        settings["active_resume_id"] = None
+        row = db.get(Setting, "global")
+        if row:
+            row.value = settings
+    db.delete(resume)
+    db.commit()
+    return {"deleted": True, "id": resume_id}
 
 @app.post("/api/resumes/{resume_id}/activate")
 def activate_resume(resume_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
@@ -607,19 +628,39 @@ async def evaluate_job_endpoint(
 
 
 @app.get("/api/jobs")
-def list_jobs(limit: int = 200, batch_id: Optional[str] = None, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+def list_jobs(limit: int = 20, offset: int = 0, status: Optional[str] = None, batch_id: Optional[str] = None, db: Session = Depends(get_db)) -> dict[str, Any]:
     q = select(Job).order_by(desc(Job.created_at))
     if batch_id:
         q = q.where(Job.batch_id == batch_id)
-    jobs = db.scalars(q.limit(min(limit, 500))).all()
-    return [job_to_dict(j) for j in jobs]
+    if status:
+        q = q.where(Job.status == status)
+    total = db.scalar(select(func.count()).select_from(q.subquery()))
+    jobs = db.scalars(q.offset(offset).limit(min(limit, 500))).all()
+    return {"jobs": [job_to_dict(j) for j in jobs], "total": total, "offset": offset, "limit": limit}
 
+@app.delete("/api/jobs/errors")
+def delete_error_jobs(db: Session = Depends(get_db)) -> dict[str, Any]:
+    from sqlalchemy import delete
+    stmt = delete(Job).where(Job.status == "error")
+    result = db.execute(stmt)
+    db.commit()
+    return {"deleted": result.rowcount}
+
+@app.delete("/api/jobs")
+def delete_jobs_by_status(status: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    from sqlalchemy import delete
+    stmt = delete(Job).where(Job.status == status)
+    result = db.execute(stmt)
+    db.commit()
+    return {"deleted": result.rowcount, "status": status}
 
 @app.get("/api/jobs/version")
-def jobs_version(batch_id: Optional[str] = None, db: Session = Depends(get_db)) -> dict[str, Any]:
+def jobs_version(status: Optional[str] = None, batch_id: Optional[str] = None, db: Session = Depends(get_db)) -> dict[str, Any]:
     q = select(func.count(Job.id), func.max(Job.updated_at))
     if batch_id:
         q = q.where(Job.batch_id == batch_id)
+    if status:
+        q = q.where(Job.status == status)
     count, latest = db.execute(q).one()
     return {
         "batch_id": batch_id or "",

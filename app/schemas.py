@@ -42,7 +42,7 @@ class ReplyIn(BaseModel):
 
 class SettingsPatch(BaseModel):
     active_resume_id: Optional[str] = None
-    api_base_url: Optional[str] = None
+    api_key: Optional[str] = None
     model: Optional[str] = None
     auto_send_initial: Optional[bool] = None
     auto_reply: Optional[bool] = None
@@ -53,13 +53,10 @@ class SettingsPatch(BaseModel):
     stop_on_risk_prompt: Optional[bool] = None
     allow_contact_info_in_messages: Optional[bool] = None
     target_cities: Optional[list[str]] = None
-    target_city: Optional[str] = None
     target_job_keyword: Optional[str] = None
-    target_roles: Optional[list[str]] = None
     salary_expectation: Optional[str] = None
     blocked_companies: Optional[list[str]] = None
     blocked_keywords: Optional[list[str]] = None
-    preferred_keywords: Optional[list[str]] = None
 
 
 class TextResumeIn(BaseModel):

@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════
-   工作通 — Frontend (Figma SaaS Dashboard)
+   工作通 — Frontend
    ═══════════════════════════════════════════════ */
 const api = async (path, opts = {}) => {
   const r = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
@@ -9,16 +9,57 @@ const api = async (path, opts = {}) => {
 const $ = id => document.getElementById(id);
 const $$ = (sel, root) => (root || document).querySelectorAll(sel);
 
-const FIELDS = ["api_base_url","model","daily_chat_limit","cooldown_min_ms","cooldown_max_ms","min_score_to_chat","salary_expectation","target_city","target_job_keyword","target_cities","target_roles","preferred_keywords","blocked_keywords","auto_send_initial","auto_reply","stop_on_risk_prompt","allow_contact_info_in_messages"];
+const FIELDS = ["api_key","model","daily_chat_limit","cooldown_min_ms","cooldown_max_ms","min_score_to_chat","salary_expectation","target_job_keyword","target_cities","blocked_keywords","auto_send_initial","auto_reply","stop_on_risk_prompt","allow_contact_info_in_messages"];
 function splitList(v) { return String(v||"").split(/[,，\n]/).map(s=>s.trim()).filter(Boolean); }
 function joinList(v) { return Array.isArray(v)?v.join("，"):v||""; }
 
-let timer = null, running = false, batchId = "", lastVer = "", loading = false;
+let timer = null, running = false, batchId = "", lastVer = "", loading = false, currentJobData = [];
 
-// ── Mode switching ────────────────────────────
+// ══════ Page Routing ════════════════════════
+function navigateTo(page) {
+  $$(".page").forEach(p => p.classList.remove("active"));
+  $$(".nav-item").forEach(x => x.classList.remove("active"));
+  const target = $(`page-${page}`);
+  if (target) target.classList.add("active");
+  const navBtn = document.querySelector(`.nav-item[data-page="${page}"]`);
+  if (navBtn) navBtn.classList.add("active");
+  if (page === "settings") loadResumes();
+  if (page === "workflow") updateReportStats();
+}
+$$(".nav-item").forEach(b => {
+  b.addEventListener("click", () => { const page = b.dataset.page; if (page) navigateTo(page); });
+});
+
+// ══════ Job Detail Drawer ═══════════════════
+function openJobDrawer(job) {
+  const statusTag = s => ["sent","chat_started"].includes(s) ? "tag-sent" : ["skipped","skip"].includes(s) ? "tag-skip" : s === "error" ? "tag-err" : s === "evaluated" ? "tag-eval" : "";
+  const s = job.status || job.decision || "";
+  const ts = job.created_at ? job.created_at.slice(0,16).replace("T"," ") : "−";
+  $("job-detail-title").textContent = job.title || "岗位详情";
+  $("job-detail-body").innerHTML = `
+    <div class="job-detail-score">${job.score} <span style="font-size:14px;color:var(--text-secondary)">分</span></div>
+    <div class="job-detail-meta">
+      <span class="tag ${statusTag(s)}">${s||"−"}</span>
+      <span style="font-size:12px;color:var(--text-secondary)">${job.company||"−"}</span>
+      <span style="font-size:12px;color:var(--text-secondary)">${job.city||""} · ${job.salary||""}</span>
+      <span style="font-size:12px;color:var(--text-muted)">采集于 ${ts}</span>
+    </div>
+    ${job.url ? `<a href="${job.url}" target="_blank" style="font-size:12px;color:var(--primary)">在 BOSS 直聘查看 →</a>` : ""}
+    ${(job.reasons||[]).filter(r=>r).length ? `<div class="job-detail-section"><h4>匹配原因</h4>${job.reasons.filter(r=>r).map(r => `<div class="job-detail-reason">${r}</div>`).join("")}</div>` : ""}
+    ${(job.risks||[]).filter(r=>r).length ? `<div class="job-detail-section"><h4>风险提示</h4>${job.risks.filter(r=>r).map(r => `<div class="job-detail-risk">${r}</div>`).join("")}</div>` : ""}
+    ${job.initial_message ? `<div class="job-detail-section"><h4>AI 开场白</h4><div class="job-detail-msg">${job.initial_message}</div></div>` : ""}
+    ${job.description ? `<div class="job-detail-section"><h4>职位描述</h4><div class="job-detail-desc">${job.description}</div></div>` : ""}
+  `;
+  $("job-drawer").classList.add("open");
+  $("job-drawer-overlay").classList.add("open");
+}
+function closeJobDrawer() { $("job-drawer").classList.remove("open"); $("job-drawer-overlay").classList.remove("open"); }
+$("job-drawer-close")?.addEventListener("click", closeJobDrawer);
+$("job-drawer-overlay")?.addEventListener("click", closeJobDrawer);
+
+// ══════ Mode ════════════════════════════════
 function getMode() { const c = document.querySelector('input[name="pw-mode"]:checked'); return c?c.value:"expected"; }
 function getSearch() { return $("pw-search-keyword").value.trim(); }
-
 function updateModeUI() {
   const m = getMode();
   $$(".mode-card").forEach(c => c.classList.toggle("selected", c.querySelector("input").value === m));
@@ -26,26 +67,7 @@ function updateModeUI() {
 }
 $$(".mode-card").forEach(c => c.addEventListener("click", () => { c.querySelector("input").checked = true; updateModeUI(); }));
 
-// ── Sidebar navigation ────────────────────────
-$$(".nav-item").forEach(b => {
-  b.addEventListener("click", () => {
-    $$(".nav-item").forEach(x => x.classList.remove("active"));
-    b.classList.add("active");
-    const nav = b.dataset.nav;
-    if (nav === "settings") openDrawer();
-    else if (nav === "resume") openDrawer();
-    else if (nav === "events") { document.querySelector(".card:nth-child(4)").scrollIntoView({behavior:"smooth"}); }
-    else if (nav === "jobs") { document.querySelector(".card:nth-child(5)").scrollIntoView({behavior:"smooth"}); }
-  });
-});
-
-// ── Drawer ────────────────────────────────────
-function openDrawer() { $("settings-drawer").classList.add("open"); $("drawer-overlay").classList.add("open"); loadResumes(); }
-function closeDrawer() { $("settings-drawer").classList.remove("open"); $("drawer-overlay").classList.remove("open"); }
-$("drawer-close").addEventListener("click", closeDrawer);
-$("drawer-overlay").addEventListener("click", closeDrawer);
-
-// ── Settings ──────────────────────────────────
+// ══════ Settings ════════════════════════════
 async function loadSettings() {
   const s = await api("/api/settings");
   for (const k of FIELDS) { const el = $(k); if (!el) continue;
@@ -54,123 +76,113 @@ async function loadSettings() {
     else el.value = s[k] ?? "";
   }
 }
+
 async function saveSettings() {
   const p = {};
   for (const k of FIELDS) { const el = $(k); if (!el) continue;
     if (el.type === "checkbox") p[k] = el.checked;
-    else if (["target_cities","target_roles","preferred_keywords","blocked_keywords"].includes(k)) p[k] = splitList(el.value);
+    else if (["target_cities","blocked_keywords"].includes(k)) p[k] = splitList(el.value);
     else if (["daily_chat_limit","cooldown_min_ms","cooldown_max_ms","min_score_to_chat"].includes(k)) p[k] = Number(el.value || 0);
     else p[k] = el.value;
   }
   await api("/api/settings", { method: "PATCH", body: JSON.stringify(p) });
-  await loadSettings(); closeDrawer();
+  await loadSettings();
 }
 
-// ── Health ────────────────────────────────────
+// ══════ Health ═════════════════════════════
 async function checkHealth() {
   try {
     const h = await api("/api/health");
-    const connected = h.browser_running;
-    $("cdp-status").textContent = connected ? "9223 已连接" : "未连接";
-    $("cdp-status").style.color = connected ? "#34D399" : "#94A3B8";
-    const statusBadge = $("status-badge");
-    if (connected) { statusBadge.className = "badge-status running"; $("status-text").textContent = "浏览器已连接"; }
-    else { statusBadge.className = "badge-status idle"; $("status-text").textContent = "就绪"; }
+    const ok = h.browser_running;
+    $("cdp-status").textContent = ok ? "9223 已连接" : "未连接";
+    $("cdp-status").style.color = ok ? "#34D399" : "#94A3B8";
   } catch(e) { $("cdp-status").textContent = "离线"; $("cdp-status").style.color = "#EF4444"; }
 }
 
-// ── Automation ────────────────────────────────
+// ══════ Automation ═════════════════════════
 async function pwLaunch() {
   const btn = $("pw-launch"); btn.disabled = true; btn.textContent = "启动中…";
-  try { await api("/api/setup/launch-browser", { method: "POST" }); $("progress-last").textContent = "浏览器已启动，请登录 BOSS 直聘"; }
-  catch(e) { alert(e.message); }
-  finally { btn.disabled = false; btn.textContent = "启动浏览器"; }
+  try { await api("/api/setup/launch-browser", { method: "POST" }); $("progress-last").textContent = "浏览器已启动"; } catch(e) { $("progress-last").textContent = "启动失败：" + e.message; }
+  btn.disabled = false; btn.textContent = "启动浏览器"; await checkHealth();
 }
 async function pwStart() {
-  if (running) return;
-  const mode = getMode(), kw = getSearch();
-  if (mode === "search" && !kw) { alert("请输入搜索关键词"); return; }
+  const mode = getMode(), keyword = getSearch();
+  let url = "/api/automation/start"; if (mode === "search") url += "?keyword=" + encodeURIComponent(keyword);
+  try { await api(url, { method: "POST" }); running = true; startPolling(); } catch(e) { $("progress-last").textContent = "启动失败：" + e.message; }
+}
+async function pwStop() { try { await api("/api/automation/stop", { method: "POST" }); stopRunning("手动停止"); } catch(e) {} }
+async function pwCloseBrowser() { try { await api("/api/setup/close-browser", { method: "POST" }); await checkHealth(); } catch(e) {} }
+
+function stopRunning(reason) {
+  running = false; if (timer) { clearInterval(timer); timer = null; }
+  $("progress-last").textContent = reason;
+  $("kpi-task").textContent = "就绪"; $("kpi-task").className = "kpi-value green";
+  $("progress-subtitle").textContent = reason;
+}
+function startPolling() { if (timer) clearInterval(timer); timer = setInterval(pollAutomation, 1500); pollAutomation(); }
+async function pollAutomation() {
   try {
-    const r = await api("/api/automation/playwright/start", { method: "POST", body: JSON.stringify({ mode, search_keyword: kw }) });
-    running = true; batchId = ""; lastVer = ""; $("jobs").innerHTML = "";
-    $("status-badge").className = "badge-status running"; $("status-text").textContent = "任务运行中";
-    $("progress-subtitle").textContent = "正在初始化…"; $("progress-last").textContent = "任务已启动";
-    $("pw-start").disabled = true; timer = setInterval(poll, 1500);
-  } catch(e) { alert(e.message); }
-}
-async function pwStop() {
-  try { await api("/api/automation/playwright/stop", { method: "POST" }); stopRunning("手动停止"); }
-  catch(e) { alert(e.message); }
-}
-async function pwCloseBrowser() {
-  try { await api("/api/setup/stop-browser", { method: "POST" }); stopRunning("浏览器已断开"); }
-  catch(e) { alert(e.message); }
-}
-function stopRunning(msg) {
-  running = false; $("pw-start").disabled = false;
-  $("status-badge").className = "badge-status idle"; $("status-text").textContent = msg || "就绪";
-  $("progress-subtitle").textContent = msg || "就绪"; $("progress-pct").textContent = "−";
-  $("progress-eta").textContent = ""; $("progress-last").textContent = msg || "就绪";
-  $("pw-progress-fill").style.width = "0%";
-  if (timer) { clearInterval(timer); timer = null; }
-}
-async function poll() {
-  try {
-    const d = await api("/api/automation/playwright/status"), s = d.stats || {};
+    const d = await api("/api/automation/poll", { method: "POST", body: JSON.stringify({status:"online",running}) });
     if (d.batch_id && d.batch_id !== batchId) { batchId = d.batch_id; lastVer = ""; await loadJobs(); }
-    $("kpi-sent").textContent = s.sent || 0;
-    $("kpi-skipped").textContent = s.skipped || 0;
-    $("kpi-errors").textContent = s.errors || 0;
-    const done = (s.sent||0)+(s.skipped||0)+(s.errors||0), total = s.total || 0;
-    $("kpi-progress").textContent = done ? `${done}/${total}` : "0/0";
-    if (d.message) {
-      $("progress-subtitle").textContent = d.message;
-      $("progress-last").textContent = d.message;
-      $("kpi-event").textContent = d.message.slice(0,40);
-    }
-    if (total > 0) { const pct = Math.min(100, Math.round(done/total*100)); $("pw-progress-fill").style.width = pct+"%"; $("progress-pct").textContent = pct+"%"; }
+    if (d.running && !running) { running = true; startPolling(); }
     if (!d.running && running) { stopRunning(d.status === "completed" ? "完成" : "已停止"); await loadJobs(); }
-    await checkVer();
-    // Quota
+    $("progress-subtitle").textContent = d.message || "运行中…";
+    $("progress-last").textContent = d.last_action || "";
+    if (d.progress_pct != null) { $("pw-progress-fill").style.width = d.progress_pct + "%"; $("progress-pct").textContent = d.progress_pct + "%"; }
+    if (d.eta) $("progress-eta").textContent = d.eta;
+    $("kpi-browser").textContent = d.browser_running ? "已连接" : "未启动";
+    $("kpi-browser").className = "kpi-value " + (d.browser_running ? "green" : "blue");
+    $("kpi-sent").textContent = d.sent || 0;
+    $("kpi-skipped").textContent = d.skipped || 0;
+    $("kpi-errors").textContent = d.errors || 0;
+    $("kpi-progress").textContent = (d.current||0) + "/" + (d.total||0);
+    const pc = $("progress-counter"); if (pc) pc.textContent = (d.current||0) + " / " + (d.total||0);
     try { const q = await api("/api/automation/quota"); $("kpi-quota").textContent = `${q.used||0} / ${q.limit||0}`; } catch(e) {}
+    await checkVer();
   } catch(e) {}
 }
 
-// ── Jobs ──────────────────────────────────────
+// ══════ Jobs ═══════════════════════════════
+let jobPage = 1, jobPageSize = 10, jobTotal = 0, jobStatusFilter = "";
+
+function updateJobPagination() {
+  const tp = Math.max(1, Math.ceil(jobTotal / jobPageSize));
+  $("job-page-info").textContent = `第 ${jobPage} / ${tp} 页（共 ${jobTotal} 条）`;
+  $("job-prev").disabled = jobPage <= 1;
+  $("job-next").disabled = jobPage >= tp;
+}
+
 async function loadJobs() {
-  let url = "/api/jobs?limit=500"; if (batchId) url += "&batch_id=" + encodeURIComponent(batchId);
-  const jobs = await api(url);
+  const offset = (jobPage - 1) * jobPageSize;
+  let url = `/api/jobs?limit=${jobPageSize}&offset=${offset}`;
+  if (batchId) url += "&batch_id=" + encodeURIComponent(batchId);
+  if (jobStatusFilter) url += "&status=" + encodeURIComponent(jobStatusFilter);
+  const data = await api(url);
+  const jobs = data.jobs; jobTotal = data.total; currentJobData = jobs;
   const statusTag = s => ["sent","chat_started"].includes(s) ? "tag-sent" : ["skipped","skip"].includes(s) ? "tag-skip" : s === "error" ? "tag-err" : s === "evaluated" ? "tag-eval" : "";
-  $("jobs").innerHTML = jobs.map(j => {
+  $("jobs").innerHTML = jobs.map((j, i) => {
+    const seq = offset + i + 1;
     const s = j.status||j.decision||"", reasons = (j.reasons||[]).filter(r=>r).join("；");
     const risks = (j.risks||[]).map(r=>"⚠"+r).join("；"), note = [reasons,risks].filter(Boolean).join(" ").slice(0,120);
-    return `<tr><td class="score">${j.score}</td><td><span class="tag ${statusTag(s)}">${s||"−"}</span></td><td><a href="${j.url||'#'}" target="_blank">${(j.title||"岗位").slice(0,40)}</a></td><td>${j.company||"−"}</td><td style="font-size:12px;color:var(--text-secondary)">${note||j.initial_message||""}</td></tr>`;
+    const ts = j.created_at ? j.created_at.slice(0,16).replace("T"," ") : "−";
+    return `<tr data-job-id="${j.id}"><td style="color:var(--text-secondary);font-size:12px;text-align:center">${seq}</td><td class="score">${j.score}</td><td><span class="tag ${statusTag(s)}">${s||"−"}</span></td><td><a href="${j.url||'#'}" target="_blank" onclick="event.stopPropagation()">${(j.title||"岗位").slice(0,40)}</a></td><td>${j.company||"−"}</td><td style="font-size:12px;color:var(--text-secondary);white-space:nowrap">${ts}</td><td style="font-size:12px;color:var(--text-secondary)">${note||j.initial_message||""}</td></tr>`;
   }).join("");
-  $("job-header-count").textContent = `${jobs.length} 条记录`;
-  // Message preview
-  const msgs = jobs.filter(j => j.initial_message && j.status !== "skipped").slice(0, 5);
-  if (msgs.length) {
-    $("msg-preview-hint").textContent = `最近 ${msgs.length} 条开工白`;
-    $("msg-preview").innerHTML = msgs.map(j => `<div style="padding:8px 0;border-bottom:1px solid var(--border-light);font-size:12px"><strong style="color:var(--primary)">${(j.title||"").slice(0,30)}</strong><br><span style="color:var(--text-secondary)">${(j.initial_message||"").slice(0,80)}</span></div>`).join("");
-  }
+  $("job-header-count").textContent = `共 ${jobTotal} 条记录`;
+  updateJobPagination();
+  $$("#jobs tr").forEach(tr => tr.addEventListener("click", () => { const j = currentJobData.find(x => x.id === tr.dataset.jobId); if (j) openJobDrawer(j); }));
+  updateReportStats();
 }
+
 async function checkVer() {
   if (loading) return;
   let url = "/api/jobs/version"; if (batchId) url += "?batch_id=" + encodeURIComponent(batchId);
+  if (jobStatusFilter) url += "&status=" + encodeURIComponent(jobStatusFilter);
   const v = await api(url), token = `${v.batch_id||""}|${v.count||0}|${v.latest_updated_at||""}`;
   if (token === lastVer) return; lastVer = token; loading = true;
   try { await loadJobs(); } finally { loading = false; }
 }
 
-// ── Events ────────────────────────────────────
-async function loadEvents() {
-  try {
-    const events = await api("/api/events?limit=20");
-    $("events").innerHTML = events.map(e => `<div class="event-item"><span class="event-time">${(e.created_at||"").slice(-8)||"--:--:--"}</span><span class="event-msg">${e.type}: ${JSON.stringify(e.payload||{}).slice(0,80)}</span></div>`).join("");
-  } catch(e) {}
-}
-
-// ── Resumes ───────────────────────────────────
+// ══════ Resumes ════════════════════════════
 async function uploadResume(e) { e.preventDefault();
   const inp = $("resume-file"); if (!inp.files?.[0]) return;
   const fd = new FormData(); fd.append("file", inp.files[0]);
@@ -182,17 +194,43 @@ async function analyzeText() {
   $("resume-text").value = ""; await loadResumes();
 }
 async function activateResume(id) { await api(`/api/resumes/${id}/activate`, { method: "POST" }); await loadResumes(); }
+async function deleteResume(id) { if (!confirm("确定要删除该简历吗？")) return; await api(`/api/resumes/${id}`, { method: "DELETE" }); await loadResumes(); }
 async function loadResumes() {
-  const resumes = await api("/api/resumes");
-  $("resumes").innerHTML = resumes.map(r => {
-    const name = r.analysis?.name || r.filename || "未命名", skills = (r.analysis?.core_skills||[]).slice(0,4).join("、");
-    return `<div class="resume-card"><span class="rname">${name}${r.is_active?' <span class="rtag">当前</span>':''}</span><span class="rskills">${skills}</span><button class="btn btn-ghost btn-sm" ${r.is_active?'disabled':''}>${r.is_active?'已设':'启用'}</button></div>`;
-  }).join("");
-  $$(".resume-card button").forEach((btn,i) => { btn.addEventListener("click", () => activateResume(resumes[i].id)); });
+  try {
+    const resumes = await api("/api/resumes");
+    $("resumes").innerHTML = resumes.map(r => {
+      const name = r.analysis?.name || r.filename || "未命名", skills = (r.analysis?.core_skills||[]).slice(0,4).join("、");
+      return `<div class="resume-card"><span class="rname">${name}${r.is_active?' <span class="rtag">当前</span>':''}</span><span class="rskills">${skills}</span><button class="btn btn-ghost btn-sm resume-remove-btn" data-rid="${r.id}">删除</button><button class="btn btn-ghost btn-sm resume-activate-btn" data-rid="${r.id}" ${r.is_active?'disabled':''}>${r.is_active?'已设':'启用'}</button></div>`;
+    }).join("");
+    $$(".resume-card .resume-activate-btn").forEach(btn => btn.addEventListener("click", () => activateResume(btn.dataset.rid)));
+    $$(".resume-card .resume-remove-btn").forEach(btn => btn.addEventListener("click", () => deleteResume(btn.dataset.rid)));
+    const active = resumes.find(r => r.is_active);
+    const detail = $("resume-detail");
+    if (active && active.analysis) {
+      const a = active.analysis;
+      detail.style.display = "block";
+      detail.innerHTML = `<strong>当前简历：${a.name||active.filename}</strong><br>状态：已解析 · 最近用于岗位评分<br>${a.name ? `姓名：${a.name}<br>` : ""}${a.experience_years ? `经验：${a.experience_years} 年<br>` : ""}${a.current_role ? `当前角色：${a.current_role}<br>` : ""}${a.salary_expectation ? `期望薪资：${a.salary_expectation}<br>` : ""}${a.core_skills?.length ? `核心技能：${a.core_skills.join("、")}<br>` : ""}${a.summary ? `摘要：${a.summary}` : ""}`;
+    } else { detail.style.display = "none"; }
+  } catch(e) {}
 }
 
-// ── Init ──────────────────────────────────────
-async function init() { await checkHealth(); await loadSettings(); await loadJobs(); await loadEvents(); }
+// ══════ Workflow Report ════════════════════
+async function updateReportStats() {
+  try {
+    const sent = await api("/api/jobs?limit=1&status=sent");
+    const skipped = await api("/api/jobs?limit=1&status=skipped");
+    const errors = await api("/api/jobs?limit=1&status=error");
+    const all = await api("/api/jobs?limit=1");
+    const ev = (all.total||0) - (sent.total||0) - (skipped.total||0) - (errors.total||0);
+    if ($("rpt-evaluated")) $("rpt-evaluated").textContent = ev;
+    if ($("rpt-sent")) $("rpt-sent").textContent = sent.total || 0;
+    if ($("rpt-skipped")) $("rpt-skipped").textContent = skipped.total || 0;
+    if ($("rpt-errors")) $("rpt-errors").textContent = errors.total || 0;
+  } catch(e) {}
+}
+
+// ══════ Init ═══════════════════════════════
+async function init() { checkHealth(); loadSettings(); loadJobs(); }
 
 $("pw-launch").addEventListener("click", () => pwLaunch());
 $("pw-start").addEventListener("click", () => pwStart());
@@ -201,9 +239,10 @@ $("pw-close-browser").addEventListener("click", () => pwCloseBrowser());
 $("save-settings").addEventListener("click", () => saveSettings());
 $("upload-form").addEventListener("submit", e => uploadResume(e));
 $("analyze-text").addEventListener("click", () => analyzeText());
-$("event-mini").addEventListener("click", () => loadEvents());
+$("job-status-filter").addEventListener("change", () => { jobStatusFilter = $("job-status-filter").value; jobPage = 1; loadJobs(); });
+$("job-prev").addEventListener("click", () => { if (jobPage > 1) { jobPage--; loadJobs(); } });
+$("job-next").addEventListener("click", () => { const tp = Math.max(1, Math.ceil(jobTotal / jobPageSize)); if (jobPage < tp) { jobPage++; loadJobs(); } });
 
 init(); updateModeUI();
 setInterval(checkHealth, 8000);
 setInterval(checkVer, 2000);
-setInterval(loadEvents, 5000);

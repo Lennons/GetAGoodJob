@@ -24,10 +24,9 @@ MAX_SESSION_SEC = 25 * 60
 LONG_BREAK_EVERY_N = 8
 LONG_BREAK_MIN_SEC = 45
 LONG_BREAK_MAX_SEC = 120
-RECOMMENDED_JOB_TAB = "产品经理(重庆)"
 TARGET_JOBS_URL = "https://www.zhipin.com/web/geek/jobs?city=101040100"
 TARGET_JOB_KEYWORD = "产品经理"
-TARGET_CITY_NAME = "重庆"
+DEFAULT_CITY = "重庆"
 MAX_EMPTY_SCROLL_ROUNDS = 5
 
 # ── JS snippets ────────────────────────────────────
@@ -237,7 +236,7 @@ SEARCH_AND_SUBMIT_JS = """
 def _target_list_state_js(label: str, keyword: str) -> str:
     label_json = json.dumps(label, ensure_ascii=False)
     keyword_json = json.dumps(keyword, ensure_ascii=False)
-    city_json = json.dumps(TARGET_CITY_NAME, ensure_ascii=False)
+    city_json = json.dumps(city, ensure_ascii=False)
     return f"""
 (() => {{
   const label = {label_json};
@@ -537,6 +536,13 @@ class AutomationEngine:
         self._consecutive = 0
         self._session_start = time_module.time()
 
+        # Compute job tab from settings
+        keyword = settings.get("target_job_keyword", "产品经理")
+        cities = settings.get("target_cities", ["重庆"])
+        city = cities[0] if cities else "重庆"
+        self._job_tab = f"{keyword}({city})"
+        self._job_keyword = keyword
+
         try:
             bm = get_browser()
             if not bm.running:
@@ -559,7 +565,7 @@ class AutomationEngine:
                     return self._result(False, "推荐页加载失败")
                 self._emit("selecting", f"推荐页面：{selected.get('cardCount', 0)} 个岗位", on_progress)
             else:
-                self._emit("selecting", f"定位岗位列表：{RECOMMENDED_JOB_TAB}", on_progress)
+                self._emit("selecting", f"定位岗位列表：{self._job_tab}", on_progress)
                 selected = await self._prepare_target_job_list(bm)
                 if not selected.get("ok"):
                     reason = (
@@ -571,12 +577,12 @@ class AutomationEngine:
                         f"visibleExpectActive={selected.get('visibleExpectActive')}, "
                         f"pageExpectId={selected.get('pageExpectId') or '-'}"
                     )
-                    message = f"未能真正切到 {RECOMMENDED_JOB_TAB}，已停止，避免在推荐页投递（{reason}）"
+                    message = f"未能真正切到 {self._job_tab}，已停止，避免在推荐页投递（{reason}）"
                     self._emit("error", message, on_progress)
                     return self._result(False, message)
                 self._emit(
                     "selecting",
-                    f"已锁定 {RECOMMENDED_JOB_TAB}，可见岗位 {selected.get('cardCount', 0)} 个",
+                    f"已锁定 {self._job_tab}，可见岗位 {selected.get('cardCount', 0)} 个",
                     on_progress,
                 )
             await asyncio.sleep(1)
@@ -931,7 +937,7 @@ class AutomationEngine:
         """Stay on recommend tab, ensure city is correct."""
         await bm.navigate(TARGET_JOBS_URL)
         await asyncio.sleep(4)
-        city_result = await self._select_target_city(bm)
+        city_result = await self._select_target_city(bm, settings.get("target_cities", [DEFAULT_CITY])[0])
         await asyncio.sleep(3)
         state = await self._target_list_state(bm)
         state["city_selected"] = city_result
@@ -950,14 +956,14 @@ class AutomationEngine:
 
         attempts = []
         for attempt in range(1, 4):
-            selected = await self._select_recommended_job_tab(bm, RECOMMENDED_JOB_TAB)
+            selected = await self._select_recommended_job_tab(bm, self._job_tab)
             await asyncio.sleep(3)
             current = await bm.current_url()
             if "/web/geek/jobs" not in current:
                 await bm.navigate(TARGET_JOBS_URL)
                 await asyncio.sleep(3)
 
-            city_selected = await self._select_target_city(bm)
+            city_selected = await self._select_target_city(bm, settings.get("target_cities", [DEFAULT_CITY])[0])
             await asyncio.sleep(4)
             state = await self._target_list_state(bm)
             state["selected"] = selected
@@ -988,7 +994,7 @@ class AutomationEngine:
 
     async def _target_list_state(self, bm) -> dict:
         try:
-            result = await bm.evaluate(_target_list_state_js(RECOMMENDED_JOB_TAB, TARGET_JOB_KEYWORD))
+            result = await bm.evaluate(_target_list_state_js(self._job_tab, self._job_keyword))
             return result if isinstance(result, dict) else {"ok": False, "reason": "invalid_result"}
         except Exception as exc:
             return {"ok": False, "reason": str(exc)}
@@ -1003,18 +1009,18 @@ class AutomationEngine:
         except Exception as exc:
             return {"ok": False, "reason": str(exc)}
 
-    async def _select_target_city(self, bm) -> dict:
+    async def _select_target_city(self, bm, city: str = DEFAULT_CITY) -> dict:
         try:
             state = await self._target_list_state(bm)
             if state.get("citySelected"):
-                return {"ok": True, "already": True, "city": state.get("cityLabel") or TARGET_CITY_NAME}
+                return {"ok": True, "already": True, "city": state.get("cityLabel") or city}
             opened = await bm.evaluate(_open_city_dialog_js())
             await asyncio.sleep(1)
-            selected = await bm.evaluate(_select_city_option_js(TARGET_CITY_NAME))
+            selected = await bm.evaluate(_select_city_option_js(city))
             if not (isinstance(selected, dict) and selected.get("ok")):
                 opened = await bm.evaluate(_open_city_dialog_js())
                 await asyncio.sleep(2)
-                selected = await bm.evaluate(_select_city_option_js(TARGET_CITY_NAME))
+                selected = await bm.evaluate(_select_city_option_js(city))
             return {
                 "ok": bool(isinstance(selected, dict) and selected.get("ok")),
                 "opened": opened,

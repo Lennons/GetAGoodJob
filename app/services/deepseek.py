@@ -53,8 +53,8 @@ class DeepSeekClient:
             raise
 
 
-async def analyze_resume(text: str, *, model: Optional[str] = None, base_url: Optional[str] = None) -> dict:
-    client = DeepSeekClient(base_url=base_url, model=model)
+async def analyze_resume(text: str, *, model: Optional[str] = None, api_key: Optional[str] = None) -> dict:
+    client = DeepSeekClient(api_key=api_key, model=model)
     if not client.configured:
         return fallback_analyze_resume(text)
 
@@ -72,37 +72,170 @@ async def analyze_resume(text: str, *, model: Optional[str] = None, base_url: Op
     return await client.chat_json(messages, model=model, max_tokens=1400)
 
 
-def fallback_evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
-    text = " ".join(
-        [
-            str(job.get("title", "")),
-            str(job.get("company", "")),
-            str(job.get("salary", "")),
-            str(job.get("city", "")),
-            str(job.get("description", "")),
-        ]
-    )
-    blocked_hits = keyword_hits(text, settings.get("blocked_keywords", []))
-    preferred_hits = keyword_hits(text, settings.get("preferred_keywords", []))
-    skill_hits = keyword_hits(text, resume.get("core_skills", []))
 
-    score = 45 + min(len(skill_hits) * 9, 30) + min(len(preferred_hits) * 5, 15) - len(blocked_hits) * 20
-    score = max(0, min(100, score))
-    decision = "chat" if score >= int(settings.get("min_score_to_chat", 72)) and not blocked_hits else "skip"
+def _score_salary(job_salary: str, expected: str) -> int:
+    """Score salary match (0-15)."""
+    if not expected or not job_salary:
+        return 8  # no data, neutral
+
+    exp_nums = [int(n) for n in re.findall(r'\d+', expected)]
+    job_nums = [int(n) for n in re.findall(r'\d+', job_salary)]
+
+    if not exp_nums or not job_nums:
+        return 8
+
+    exp_min = min(exp_nums)
+    exp_max = max(exp_nums)
+    job_min = min(job_nums)
+    job_max = max(job_nums)
+
+    # Overlap check
+    if job_min <= exp_max and job_max >= exp_min:
+        return 15
+    # Close: within 30% above or below
+    gap = min(abs(job_min - exp_max), abs(job_max - exp_min))
+    if gap <= exp_min * 0.3:
+        return 10
+    if gap <= exp_min * 0.5:
+        return 5
+    return 2
+
+
+def _score_role(job_title: str, target_roles: list[str]) -> int:
+    """Score how well the job title matches target roles (0-15)."""
+    if not target_roles:
+        return 8
+    title_lower = job_title.lower()
+    for role in target_roles:
+        if role and role.lower() in title_lower:
+            return 15
+    # Partial match: check word overlap
+    title_words = set(job_title)
+    for role in target_roles:
+        if role:
+            role_words = set(role)
+            overlap = len(title_words & role_words) / max(len(role_words), 1)
+            if overlap >= 0.5:
+                return 10
+    return 3
+
+
+def _score_experience(job_text: str, resume_years: int, extra_years=None) -> int:
+    """Score experience level match (0-10)."""
+    years = extra_years if extra_years else resume_years
+    if not years:
+        return 5
+
+    # Try to find experience requirement in JD
+    exp_patterns = [
+        r'(\d+)[-~](\d+)年',
+        r'(\d+)年以上',
+        r'经验(\d+)[-~](\d+)年',
+        r'(\d+)[-~](\d+)岁',
+    ]
+    for pat in exp_patterns:
+        m = re.search(pat, job_text)
+        if m:
+            req_max = int(m.group(2)) if m.lastindex >= 2 else int(m.group(1)) + 3
+            req_min = int(m.group(1))
+            if req_min <= years <= req_max + 3:
+                return 10
+            if years >= req_max:
+                return 8
+            if years >= req_min - 1:
+                return 6
+            return 3
+    return 5  # no experience requirement found, neutral
+
+
+
+def fallback_evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
+    text = " ".join([
+        str(job.get("title", "")),
+        str(job.get("company", "")),
+        str(job.get("salary", "")),
+        str(job.get("city", "")),
+        str(job.get("description", "")),
+    ])
+    title = str(job.get("title", ""))
+    city = str(job.get("city", ""))
+    salary = str(job.get("salary", ""))
+
+    blocked_hits = keyword_hits(text, settings.get("blocked_keywords", []))
+    skill_hits = keyword_hits(text, resume.get("core_skills", []))
+    industry_hits = keyword_hits(text, resume.get("industries", []))
     reasons = []
+
+    # ── Dimension 1: City match (0-15) ─────────────────
+    target_cities = settings.get("target_cities", [])
+    city_score = 0
+    if target_cities:
+        city_lower = city.lower()
+        matched = [c for c in target_cities if c and c.lower() in city_lower]
+        city_score = min(len(matched) * 15, 15)
+    else:
+        city_score = 10  # no preference set, give moderate
+    if city_score >= 15:
+        reasons.append(f"城市匹配：{city}")
+
+    # ── Dimension 2: Salary match (0-15) ──────────────
+    salary_expectation = settings.get("salary_expectation", "") or resume.get("salary_expectation", "")
+    salary_score = _score_salary(salary, salary_expectation)
+    if salary_score >= 10:
+        reasons.append(f"薪资匹配：{salary}")
+
+    # ── Dimension 3: Skill overlap (0-35) ─────────────
+    skill_score = min(len(skill_hits) * 7, 35)
     if skill_hits:
-        reasons.append(f"技能匹配：{', '.join(skill_hits[:6])}")
-    if preferred_hits:
-        reasons.append(f"命中偏好：{', '.join(preferred_hits[:6])}")
+        reasons.append(f"技能匹配：{', '.join(skill_hits[:6])} (+{skill_score}分)")
+
+    # ── Dimension 4: Role alignment (0-15) ────────────
+    target_roles = resume.get("target_roles", [])
+    role_score = _score_role(title, target_roles)
+    if role_score >= 10:
+        reasons.append(f"岗位匹配：{title[:20]}")
+
+    # ── Dimension 5: Industry match (0-10) ────────────
+    industry_score = min(len(industry_hits) * 5, 10)
+    if industry_score:
+        reasons.append(f"行业匹配：{', '.join(industry_hits[:3])}")
+
+    # ── Dimension 6: Experience fit (0-10) ────────────
+    experience_score = _score_experience(text, resume.get("years", 3), resume.get("experience_years"))
+    if experience_score >= 8:
+        reasons.append("经验匹配")
+
+    # ── Total ────────────────────────────────────
+    score = city_score + salary_score + skill_score + role_score + industry_score + experience_score
+    score = min(score, 100)
+
+    # ── Penalty: blocked keywords ──────────────────────
+    if blocked_hits:
+        score = max(0, score - len(blocked_hits) * 40)
+    score = max(0, min(100, score))
+
+    risks = blocked_hits[:]
+    if city_score < 5:
+        reasons.append("城市可能不匹配")
+    if salary_score < 5:
+        reasons.append("薪资待确认")
+
+    decision = "chat" if score >= int(settings.get("min_score_to_chat", 72)) and not blocked_hits else "skip"
     if not reasons:
         reasons.append("信息不足，建议人工复核")
+
+    _score_detail = {
+        "city": city_score, "salary": salary_score, "skill": skill_score,
+        "role": role_score, "industry": industry_score, "experience": experience_score,
+    }
 
     return {
         "score": score,
         "decision": decision,
         "reasons": reasons,
-        "risks": blocked_hits,
+        "risks": risks,
         "best_resume_angle": resume.get("summary", "")[:140],
+        "score_detail": _score_detail,
         "initial_message": build_fallback_initial_message(resume, job) if decision == "chat" else "",
     }
 
@@ -116,7 +249,7 @@ def build_fallback_initial_message(resume: dict, job: dict) -> str:
 
 
 async def evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
-    client = DeepSeekClient(base_url=settings.get("api_base_url"), model=settings.get("model"))
+    client = DeepSeekClient(api_key=settings.get("api_key"), model=settings.get("model"))
     if not client.configured:
         return fallback_evaluate_job(resume, job, settings)
 
@@ -125,10 +258,8 @@ async def evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
         "job": job,
         "settings": {
             "target_cities": settings.get("target_cities", []),
-            "target_roles": settings.get("target_roles", []),
             "salary_expectation": settings.get("salary_expectation", ""),
             "blocked_keywords": settings.get("blocked_keywords", []),
-            "preferred_keywords": settings.get("preferred_keywords", []),
             "min_score_to_chat": settings.get("min_score_to_chat", 72),
             "allow_contact_info_in_messages": settings.get("allow_contact_info_in_messages", False),
         },
@@ -140,6 +271,11 @@ async def evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
                 "你是严谨的求职岗位匹配助手。只输出 JSON，不要 Markdown。"
                 "字段：score(0-100),decision(chat|skip|review),reasons数组,risks数组,"
                 "best_resume_angle,initial_message。"
+                "评分从 6 个维度综合考量：\n"
+                "1. 城市匹配(0-15) 2. 薪资匹配(0-15)\n"
+                "3. 技能覆盖(0-35) 4. 岗位匹配(0-15)\n"
+                "5. 行业匹配(0-10) 6. 经验匹配(0-10)\n"
+                "如果岗位描述命中屏蔽关键词，直接 skip。"
                 "只有当岗位适合开聊且 score >= min_score_to_chat 时，initial_message 才生成求职者发给招聘方的首句沟通话术；"
                 "如果 decision=skip 或 score < min_score_to_chat，initial_message 必须是空字符串。"
                 "首句要求：\n"

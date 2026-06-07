@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "active_resume_id": None,
-    "api_base_url": "https://api.deepseek.com",
+    "api_key": "",
     "model": "deepseek-v4-flash",
     "auto_send_initial": True,
     "auto_reply": True,
@@ -33,13 +33,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "stop_on_risk_prompt": True,
     "allow_contact_info_in_messages": False,
     "target_cities": [],
-    "target_city": "重庆",
     "target_job_keyword": "产品经理",
-    "target_roles": [],
     "salary_expectation": "",
     "blocked_companies": [],
     "blocked_keywords": ["培训贷", "收费", "押金", "加盟", "纯销售", "电话销售"],
-    "preferred_keywords": [],
 }
 
 
