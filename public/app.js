@@ -92,13 +92,13 @@ async function pwLaunchBrowser() {
   try {
     const result = await api("/api/setup/launch-browser", { method: "POST" });
     setHealth("浏览器已启动，请在打开的 Chrome 窗口中登录 BOSS 直聘。");
-    $_("pw-browser-status").textContent = "运行中";
+    $_("pw-browser-status-text").textContent = "运行中";
     $_("pw-message").textContent = "浏览器已就绪 \\u2713  请在 BOSS 页面登录后点击 '开始自动投递'";
     $_("pw-message").classList.remove("danger");
     return true;
   } catch (err) {
     setHealth("启动失败: " + err.message, true);
-    $_("pw-browser-status").textContent = "启动失败";
+    $_("pw-browser-status-text").textContent = "启动失败";
     $_("pw-message").textContent = "错误: " + err.message;
     $_("pw-message").classList.add("danger");
     return false;
@@ -204,7 +204,7 @@ async function pwCloseBrowser() {
   btn.textContent = "关闭中...";
   try {
     await api("/api/setup/stop-browser", { method: "POST" });
-    $_("pw-browser-status").textContent = "未启动";
+    $_("pw-browser-status-text").textContent = "未启动";
     $_("pw-task-status").textContent = "空闲";
     $_("pw-message").textContent = "浏览器已关闭";
     setHealth("浏览器已关闭");
@@ -226,7 +226,7 @@ async function loadHealth() {
     parts.push(health.model || "");
     parts.push(health.browser_running ? "浏览器: 运行中" : "浏览器: 未启动");
     setHealth(parts.join("  |  "));
-    $_("pw-browser-status").textContent = health.browser_running ? "运行中" : "未启动";
+    $_("pw-browser-status-text").textContent = health.browser_running ? "运行中" : "未启动";
   } catch (err) {
     setHealth("服务异常: " + err.message, true);
   }
@@ -333,8 +333,8 @@ async function loadJobs() {
     const tr = document.createElement("tr");
     const skipReason = reasonText(j);
     tr.innerHTML = `
-      <td>${j.score}</td>
-      <td>${escapeHtml(j.status || j.decision || "")}</td>
+      <td class="score">${j.score}</td>
+      <td class="status"><span class="badge ${statusBadge(j)}">${escapeHtml(j.status || j.decision || "")}</span></td>
       <td><a href="${escapeAttr(j.url)}" target="_blank">${escapeHtml(j.title || "岗位")}</a></td>
       <td>${escapeHtml(j.company || "")}</td>
       <td>${escapeHtml(skipReason.slice(0, 160))}</td>
@@ -342,6 +342,16 @@ async function loadJobs() {
     `;
     tbody.appendChild(tr);
   }
+  $_("job-count").textContent = jobs.length + " 条";
+}
+
+function statusBadge(job) {
+  const s = String(job.status || job.decision || "");
+  if (["sent", "chat_started"].includes(s)) return "badge-sent";
+  if (["skipped", "skip"].includes(s)) return "badge-skipped";
+  if (s === "error") return "badge-error";
+  if (s === "evaluated") return "badge-evaluated";
+  return "";
 }
 
 async function checkJobsVersion() {
