@@ -20,7 +20,7 @@ class Resume(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     filename: Mapped[str] = mapped_column(String(255), default="")
-    raw_text: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), nullable=False)
     analysis: Mapped[dict] = mapped_column(JSON, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
@@ -40,7 +40,7 @@ class Job(Base):
     company: Mapped[str] = mapped_column(String(255), default="")
     salary: Mapped[str] = mapped_column(String(255), default="")
     city: Mapped[str] = mapped_column(String(255), default="")
-    description: Mapped[str] = mapped_column(LONGTEXT, nullable=True)
+    description: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), nullable=True)
     raw: Mapped[dict] = mapped_column(JSON, nullable=False)
     score: Mapped[int] = mapped_column(Integer, default=0)
     decision: Mapped[str] = mapped_column(String(32), default="review")
@@ -76,6 +76,17 @@ class Event(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     type: Mapped[str] = mapped_column(String(64), index=True)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
+
+class JobKeyword(Base):
+    __tablename__ = "job_keywords"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("jobs.id"), nullable=True, index=True)
+    word: Mapped[str] = mapped_column(String(128), index=True)
+    category: Mapped[str] = mapped_column(String(32), default="skill")  # skill, tool, knowledge
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
 
