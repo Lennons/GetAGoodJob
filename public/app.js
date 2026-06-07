@@ -1,413 +1,209 @@
 /* ═══════════════════════════════════════════════
-   工作通 — 前端控制台
-   支持 Playwright 自动投递引擎 + 扩展模式
+   工作通 — Frontend (Figma SaaS Dashboard)
    ═══════════════════════════════════════════════ */
-
-const api = async (path, options = {}) => {
-  const resp = await fetch(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(text || `HTTP ${resp.status}`);
-  }
-  return resp.json();
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
 };
+const $ = id => document.getElementById(id);
+const $$ = (sel, root) => (root || document).querySelectorAll(sel);
 
-/* ── Settings fields ──────────────────────────── */
+const FIELDS = ["api_base_url","model","daily_chat_limit","cooldown_min_ms","cooldown_max_ms","min_score_to_chat","salary_expectation","target_city","target_job_keyword","target_cities","target_roles","preferred_keywords","blocked_keywords","auto_send_initial","auto_reply","stop_on_risk_prompt","allow_contact_info_in_messages"];
+function splitList(v) { return String(v||"").split(/[,，\n]/).map(s=>s.trim()).filter(Boolean); }
+function joinList(v) { return Array.isArray(v)?v.join("，"):v||""; }
 
-const fields = [
-  "api_base_url", "model", "daily_chat_limit",
-  "cooldown_min_ms", "cooldown_max_ms", "min_score_to_chat",
-  "salary_expectation", "target_city", "target_job_keyword", "target_cities", "target_roles",
-  "preferred_keywords", "blocked_keywords",
-  "auto_send_initial", "auto_reply",
-  "stop_on_risk_prompt", "allow_contact_info_in_messages",
-];
+let timer = null, running = false, batchId = "", lastVer = "", loading = false;
 
-function splitList(value) {
-  return String(value || "").split(/[,，\n]/).map(s => s.trim()).filter(Boolean);
+// ── Mode switching ────────────────────────────
+function getMode() { const c = document.querySelector('input[name="pw-mode"]:checked'); return c?c.value:"expected"; }
+function getSearch() { return $("pw-search-keyword").value.trim(); }
+
+function updateModeUI() {
+  const m = getMode();
+  $$(".mode-card").forEach(c => c.classList.toggle("selected", c.querySelector("input").value === m));
+  $("search-box").style.display = m === "search" ? "flex" : "none";
 }
-function joinList(value) {
-  return Array.isArray(value) ? value.join("，") : value || "";
-}
+$$(".mode-card").forEach(c => c.addEventListener("click", () => { c.querySelector("input").checked = true; updateModeUI(); }));
 
-/* ── UI helpers ───────────────────────────────── */
-
-function $_(id) { return document.querySelector("#" + id); }
-
-function setHealth(text, danger) {
-  const el = $_("health");
-  if (el) {
-    el.textContent = text;
-    el.classList.toggle("danger", !!danger);
-  }
-}
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-function escapeHtml(v) {
-  return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
-}
-function escapeAttr(v) { return escapeHtml(v).replaceAll("`","&#096;"); }
-
-function reasonText(job) {
-  const status = String(job.status || job.decision || "");
-  if (!["skipped", "skip", "error"].includes(status)) return "";
-  const looksLikeOpening = (value) => /^(您好|你好|Hi|Hello)|我对.+感兴趣|期待沟通|方便的话/i.test(String(value || "").trim());
-  const parts = [];
-  for (const item of job.reasons || []) {
-    if (item && String(item) !== String(job.initial_message || "") && !looksLikeOpening(item)) parts.push(String(item));
-  }
-  for (const item of job.risks || []) {
-    if (item) parts.push("风险：" + String(item));
-  }
-  return parts.join("；");
-}
-
-/* ══════ Playwright Automation ══════════════════ */
-
-let pwPollTimer = null;
-let pwIsRunning = false;
-
-function getActiveMode() {
-  const checked = document.querySelector('input[name="pw-mode"]:checked');
-  return checked ? checked.value : "expected";
-}
-
-function getSearchKeyword() {
-  return $_("pw-search-keyword").value.trim();
-}
-
-function updateSearchVisibility() {
-  const mode = getActiveMode();
-  $_("pw-search-keyword").style.display = mode === "search" ? "inline-block" : "none";
-}
-
-async function pwLaunchBrowser() {
-  const btn = $_("pw-launch");
-  btn.disabled = true;
-  btn.textContent = "启动中...";
-  try {
-    const result = await api("/api/setup/launch-browser", { method: "POST" });
-    setHealth("浏览器已启动，请在打开的 Chrome 窗口中登录 BOSS 直聘。");
-    $_("pw-browser-status").textContent = "运行中";
-    $_("pw-message").textContent = "浏览器已就绪 \\u2713  请在 BOSS 页面登录后点击 '开始自动投递'";
-    $_("pw-message").classList.remove("danger");
-    return true;
-  } catch (err) {
-    setHealth("启动失败: " + err.message, true);
-    $_("pw-browser-status").textContent = "启动失败";
-    $_("pw-message").textContent = "错误: " + err.message;
-    $_("pw-message").classList.add("danger");
-    return false;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "🔧 启动浏览器";
-  }
-}
-
-async function pwStartAutomation() {
-  if (pwIsRunning) return;
-  const mode = getActiveMode();
-  const searchKeyword = getSearchKeyword();
-  if (mode === "search" && !searchKeyword) {
-    alert("搜索模式下请先输入搜索关键词");
-    return;
-  }
-  try {
-    const result = await api("/api/automation/playwright/start", {
-      method: "POST",
-      body: JSON.stringify({ mode, search_keyword: searchKeyword }),
-    });
-    pwIsRunning = true;
-    $_("pw-task-status").textContent = "运行中";
-    $_("pw-progress").style.display = "block";
-    $_("pw-start").disabled = true;
-    $_("pw-message").textContent = result.message;
-    $_("pw-message").classList.remove("danger");
-    currentBatchId = "";
-    lastJobsVersion = "";
-    $_("jobs").innerHTML = "";
-    // Start polling for progress
-    pwPollTimer = setInterval(pwPollProgress, 1500);
-  } catch (err) {
-    alert("启动失败: " + err.message);
-    setHealth(err.message, true);
-  }
-}
-
-async function pwStopAutomation() {
-  try {
-    await api("/api/automation/playwright/stop", { method: "POST" });
-    pwIsRunning = false;
-    $_("pw-task-status").textContent = "已停止";
-    $_("pw-start").disabled = false;
-    $_("pw-message").textContent = "已手动停止";
-    if (pwPollTimer) { clearInterval(pwPollTimer); pwPollTimer = null; }
-  } catch (err) {
-    alert("停止失败: " + err.message);
-  }
-}
-
-async function pwPollProgress() {
-  try {
-    const data = await api("/api/automation/playwright/status");
-    const stats = data.stats || {};
-
-    // Switch to current batch_id when automation starts a new run
-    if (data.batch_id && data.batch_id !== currentBatchId) {
-      currentBatchId = data.batch_id;
-      lastJobsVersion = "";
-      await loadJobs();
-    }
-
-    $_("pw-task-status").textContent = data.running ? "运行中" : (data.status || "空闲");
-    $_("pw-stat-sent").textContent = stats.sent || 0;
-    $_("pw-stat-skipped").textContent = stats.skipped || 0;
-    $_("pw-stat-errors").textContent = stats.errors || 0;
-    const total = stats.total || 0;
-    const done = (stats.sent || 0) + (stats.skipped || 0) + (stats.errors || 0);
-    $_("pw-stat-total").textContent = done + "/" + total;
-    $_("pw-status-text").textContent = data.message || "";
-    $_("pw-message").textContent = data.message || "就绪";
-
-    // Progress bar
-    if (total > 0) {
-      const pct = Math.min(100, Math.round(done / total * 100));
-      $_("pw-progress-fill").style.width = pct + "%";
-      $_("pw-progress-fill").textContent = pct + "%";
-    }
-
-    await checkJobsVersion();
-
-    // Detect completion
-    if (!data.running && pwIsRunning) {
-      pwIsRunning = false;
-      $_("pw-start").disabled = false;
-      $_("pw-task-status").textContent = data.status === "completed" ? "✅ 完成" : "已停止";
-      $_("pw-progress-fill").style.width = "100%";
-      if (pwPollTimer) { clearInterval(pwPollTimer); pwPollTimer = null; }
-      // Refresh jobs & events
-      await loadJobs();
-      await loadEvents();
-    }
-  } catch {
-    // Silent — browser might be restarting
-  }
-}
-
-async function pwCloseBrowser() {
-  const btn = $_("pw-close-browser");
-  btn.disabled = true;
-  btn.textContent = "关闭中...";
-  try {
-    await api("/api/setup/stop-browser", { method: "POST" });
-    $_("pw-browser-status").textContent = "未启动";
-    $_("pw-task-status").textContent = "空闲";
-    $_("pw-message").textContent = "浏览器已关闭";
-    setHealth("浏览器已关闭");
-  } catch (err) {
-    alert("关闭失败: " + err.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "❌ 关闭浏览器";
-  }
-}
-
-/* ══════ Settings ═══════════════════════════════ */
-
-async function loadHealth() {
-  try {
-    const health = await api("/api/health");
-    const parts = [];
-    parts.push(health.deepseek_configured ? "DeepSeek ✓" : "DeepSeek ✗");
-    parts.push(health.model || "");
-    parts.push(health.browser_running ? "浏览器: 运行中" : "浏览器: 未启动");
-    setHealth(parts.join("  |  "));
-    $_("pw-browser-status").textContent = health.browser_running ? "运行中" : "未启动";
-  } catch (err) {
-    setHealth("服务异常: " + err.message, true);
-  }
-}
-
-async function loadSettings() {
-  const settings = await api("/api/settings");
-  for (const key of fields) {
-    const node = $_(key);
-    if (!node) continue;
-    if (node.type === "checkbox") {
-      node.checked = Boolean(settings[key]);
-    } else if (Array.isArray(settings[key])) {
-      node.value = joinList(settings[key]);
-    } else {
-      node.value = settings[key] ?? "";
-    }
-  }
-}
-
-async function saveSettings() {
-  const payload = {};
-  for (const key of fields) {
-    const node = $_(key);
-    if (!node) continue;
-    if (node.type === "checkbox") {
-      payload[key] = node.checked;
-    } else if (["target_cities","target_roles","preferred_keywords","blocked_keywords"].includes(key)) {
-      payload[key] = splitList(node.value);
-    } else if (["daily_chat_limit","cooldown_min_ms","cooldown_max_ms","min_score_to_chat"].includes(key)) {
-      payload[key] = Number(node.value || 0);
-    } else {
-      payload[key] = node.value;
-    }
-  }
-  await api("/api/settings", { method: "PATCH", body: JSON.stringify(payload) });
-  await loadAll();
-}
-
-/* ══════ Resumes ═══════════════════════════════ */
-
-async function uploadResume(e) {
-  e.preventDefault();
-  const input = $_("resume-file");
-  if (!input.files?.[0]) return;
-  const form = new FormData();
-  form.append("file", input.files[0]);
-  const resp = await fetch("/api/resumes/upload", { method: "POST", body: form });
-  if (!resp.ok) throw new Error(await resp.text());
-  input.value = "";
-  await loadAll();
-}
-
-async function analyzeTextResume() {
-  const text = $_("resume-text").value;
-  if (!text.trim()) return;
-  await api("/api/resumes/text", {
-    method: "POST",
-    body: JSON.stringify({ text, filename: "pasted-resume.txt" }),
+// ── Sidebar navigation ────────────────────────
+$$(".nav-item").forEach(b => {
+  b.addEventListener("click", () => {
+    $$(".nav-item").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    const nav = b.dataset.nav;
+    if (nav === "settings") openDrawer();
+    else if (nav === "resume") openDrawer();
+    else if (nav === "events") { document.querySelector(".card:nth-child(4)").scrollIntoView({behavior:"smooth"}); }
+    else if (nav === "jobs") { document.querySelector(".card:nth-child(5)").scrollIntoView({behavior:"smooth"}); }
   });
-  $_("resume-text").value = "";
-  await loadAll();
+});
+
+// ── Drawer ────────────────────────────────────
+function openDrawer() { $("settings-drawer").classList.add("open"); $("drawer-overlay").classList.add("open"); loadResumes(); }
+function closeDrawer() { $("settings-drawer").classList.remove("open"); $("drawer-overlay").classList.remove("open"); }
+$("drawer-close").addEventListener("click", closeDrawer);
+$("drawer-overlay").addEventListener("click", closeDrawer);
+
+// ── Settings ──────────────────────────────────
+async function loadSettings() {
+  const s = await api("/api/settings");
+  for (const k of FIELDS) { const el = $(k); if (!el) continue;
+    if (el.type === "checkbox") el.checked = !!s[k];
+    else if (Array.isArray(s[k])) el.value = joinList(s[k]);
+    else el.value = s[k] ?? "";
+  }
+}
+async function saveSettings() {
+  const p = {};
+  for (const k of FIELDS) { const el = $(k); if (!el) continue;
+    if (el.type === "checkbox") p[k] = el.checked;
+    else if (["target_cities","target_roles","preferred_keywords","blocked_keywords"].includes(k)) p[k] = splitList(el.value);
+    else if (["daily_chat_limit","cooldown_min_ms","cooldown_max_ms","min_score_to_chat"].includes(k)) p[k] = Number(el.value || 0);
+    else p[k] = el.value;
+  }
+  await api("/api/settings", { method: "PATCH", body: JSON.stringify(p) });
+  await loadSettings(); closeDrawer();
 }
 
-async function activateResume(id) {
-  await api(`/api/resumes/${id}/activate`, { method: "POST" });
-  await loadAll();
-  setHealth("当前简历已切换");
+// ── Health ────────────────────────────────────
+async function checkHealth() {
+  try {
+    const h = await api("/api/health");
+    const connected = h.browser_running;
+    $("cdp-status").textContent = connected ? "9223 已连接" : "未连接";
+    $("cdp-status").style.color = connected ? "#34D399" : "#94A3B8";
+    const statusBadge = $("status-badge");
+    if (connected) { statusBadge.className = "badge-status running"; $("status-text").textContent = "浏览器已连接"; }
+    else { statusBadge.className = "badge-status idle"; $("status-text").textContent = "就绪"; }
+  } catch(e) { $("cdp-status").textContent = "离线"; $("cdp-status").style.color = "#EF4444"; }
 }
 
+// ── Automation ────────────────────────────────
+async function pwLaunch() {
+  const btn = $("pw-launch"); btn.disabled = true; btn.textContent = "启动中…";
+  try { await api("/api/setup/launch-browser", { method: "POST" }); $("progress-last").textContent = "浏览器已启动，请登录 BOSS 直聘"; }
+  catch(e) { alert(e.message); }
+  finally { btn.disabled = false; btn.textContent = "启动浏览器"; }
+}
+async function pwStart() {
+  if (running) return;
+  const mode = getMode(), kw = getSearch();
+  if (mode === "search" && !kw) { alert("请输入搜索关键词"); return; }
+  try {
+    const r = await api("/api/automation/playwright/start", { method: "POST", body: JSON.stringify({ mode, search_keyword: kw }) });
+    running = true; batchId = ""; lastVer = ""; $("jobs").innerHTML = "";
+    $("status-badge").className = "badge-status running"; $("status-text").textContent = "任务运行中";
+    $("progress-subtitle").textContent = "正在初始化…"; $("progress-last").textContent = "任务已启动";
+    $("pw-start").disabled = true; timer = setInterval(poll, 1500);
+  } catch(e) { alert(e.message); }
+}
+async function pwStop() {
+  try { await api("/api/automation/playwright/stop", { method: "POST" }); stopRunning("手动停止"); }
+  catch(e) { alert(e.message); }
+}
+async function pwCloseBrowser() {
+  try { await api("/api/setup/stop-browser", { method: "POST" }); stopRunning("浏览器已断开"); }
+  catch(e) { alert(e.message); }
+}
+function stopRunning(msg) {
+  running = false; $("pw-start").disabled = false;
+  $("status-badge").className = "badge-status idle"; $("status-text").textContent = msg || "就绪";
+  $("progress-subtitle").textContent = msg || "就绪"; $("progress-pct").textContent = "−";
+  $("progress-eta").textContent = ""; $("progress-last").textContent = msg || "就绪";
+  $("pw-progress-fill").style.width = "0%";
+  if (timer) { clearInterval(timer); timer = null; }
+}
+async function poll() {
+  try {
+    const d = await api("/api/automation/playwright/status"), s = d.stats || {};
+    if (d.batch_id && d.batch_id !== batchId) { batchId = d.batch_id; lastVer = ""; await loadJobs(); }
+    $("kpi-sent").textContent = s.sent || 0;
+    $("kpi-skipped").textContent = s.skipped || 0;
+    $("kpi-errors").textContent = s.errors || 0;
+    const done = (s.sent||0)+(s.skipped||0)+(s.errors||0), total = s.total || 0;
+    $("kpi-progress").textContent = done ? `${done}/${total}` : "0/0";
+    if (d.message) {
+      $("progress-subtitle").textContent = d.message;
+      $("progress-last").textContent = d.message;
+      $("kpi-event").textContent = d.message.slice(0,40);
+    }
+    if (total > 0) { const pct = Math.min(100, Math.round(done/total*100)); $("pw-progress-fill").style.width = pct+"%"; $("progress-pct").textContent = pct+"%"; }
+    if (!d.running && running) { stopRunning(d.status === "completed" ? "完成" : "已停止"); await loadJobs(); }
+    await checkVer();
+    // Quota
+    try { const q = await api("/api/automation/quota"); $("kpi-quota").textContent = `${q.used||0} / ${q.limit||0}`; } catch(e) {}
+  } catch(e) {}
+}
+
+// ── Jobs ──────────────────────────────────────
+async function loadJobs() {
+  let url = "/api/jobs?limit=500"; if (batchId) url += "&batch_id=" + encodeURIComponent(batchId);
+  const jobs = await api(url);
+  const statusTag = s => ["sent","chat_started"].includes(s) ? "tag-sent" : ["skipped","skip"].includes(s) ? "tag-skip" : s === "error" ? "tag-err" : s === "evaluated" ? "tag-eval" : "";
+  $("jobs").innerHTML = jobs.map(j => {
+    const s = j.status||j.decision||"", reasons = (j.reasons||[]).filter(r=>r).join("；");
+    const risks = (j.risks||[]).map(r=>"⚠"+r).join("；"), note = [reasons,risks].filter(Boolean).join(" ").slice(0,120);
+    return `<tr><td class="score">${j.score}</td><td><span class="tag ${statusTag(s)}">${s||"−"}</span></td><td><a href="${j.url||'#'}" target="_blank">${(j.title||"岗位").slice(0,40)}</a></td><td>${j.company||"−"}</td><td style="font-size:12px;color:var(--text-secondary)">${note||j.initial_message||""}</td></tr>`;
+  }).join("");
+  $("job-header-count").textContent = `${jobs.length} 条记录`;
+  // Message preview
+  const msgs = jobs.filter(j => j.initial_message && j.status !== "skipped").slice(0, 5);
+  if (msgs.length) {
+    $("msg-preview-hint").textContent = `最近 ${msgs.length} 条开工白`;
+    $("msg-preview").innerHTML = msgs.map(j => `<div style="padding:8px 0;border-bottom:1px solid var(--border-light);font-size:12px"><strong style="color:var(--primary)">${(j.title||"").slice(0,30)}</strong><br><span style="color:var(--text-secondary)">${(j.initial_message||"").slice(0,80)}</span></div>`).join("");
+  }
+}
+async function checkVer() {
+  if (loading) return;
+  let url = "/api/jobs/version"; if (batchId) url += "?batch_id=" + encodeURIComponent(batchId);
+  const v = await api(url), token = `${v.batch_id||""}|${v.count||0}|${v.latest_updated_at||""}`;
+  if (token === lastVer) return; lastVer = token; loading = true;
+  try { await loadJobs(); } finally { loading = false; }
+}
+
+// ── Events ────────────────────────────────────
+async function loadEvents() {
+  try {
+    const events = await api("/api/events?limit=20");
+    $("events").innerHTML = events.map(e => `<div class="event-item"><span class="event-time">${(e.created_at||"").slice(-8)||"--:--:--"}</span><span class="event-msg">${e.type}: ${JSON.stringify(e.payload||{}).slice(0,80)}</span></div>`).join("");
+  } catch(e) {}
+}
+
+// ── Resumes ───────────────────────────────────
+async function uploadResume(e) { e.preventDefault();
+  const inp = $("resume-file"); if (!inp.files?.[0]) return;
+  const fd = new FormData(); fd.append("file", inp.files[0]);
+  await fetch("/api/resumes/upload", { method: "POST", body: fd }); inp.value = ""; await loadResumes();
+}
+async function analyzeText() {
+  const t = $("resume-text").value.trim(); if (!t) return;
+  await api("/api/resumes/text", { method: "POST", body: JSON.stringify({ text:t, filename:"paste.txt" }) });
+  $("resume-text").value = ""; await loadResumes();
+}
+async function activateResume(id) { await api(`/api/resumes/${id}/activate`, { method: "POST" }); await loadResumes(); }
 async function loadResumes() {
   const resumes = await api("/api/resumes");
-  const root = $_("resumes");
-  root.innerHTML = "";
-  for (const r of resumes) {
-    const item = document.createElement("div");
-    item.className = "item";
-    const title = r.analysis?.name || r.filename || "未命名";
-    const skills = (r.analysis?.core_skills || []).slice(0, 8).join("，");
-    item.innerHTML = `
-      <strong>${escapeHtml(title)} ${r.is_active ? "⭐当前" : ""}</strong>
-      <small>${escapeHtml(r.analysis?.summary || "")}</small>
-      <small>${escapeHtml(skills)}</small>
-      <div><button ${r.is_active ? "disabled" : ""}>${r.is_active ? "已是当前" : "设为当前"}</button></div>
-    `;
-    item.querySelector("button").addEventListener("click", () => activateResume(r.id));
-    root.appendChild(item);
-  }
+  $("resumes").innerHTML = resumes.map(r => {
+    const name = r.analysis?.name || r.filename || "未命名", skills = (r.analysis?.core_skills||[]).slice(0,4).join("、");
+    return `<div class="resume-card"><span class="rname">${name}${r.is_active?' <span class="rtag">当前</span>':''}</span><span class="rskills">${skills}</span><button class="btn btn-ghost btn-sm" ${r.is_active?'disabled':''}>${r.is_active?'已设':'启用'}</button></div>`;
+  }).join("");
+  $$(".resume-card button").forEach((btn,i) => { btn.addEventListener("click", () => activateResume(resumes[i].id)); });
 }
 
-/* ══════ Jobs & Events ═════════════════════════ */
+// ── Init ──────────────────────────────────────
+async function init() { await checkHealth(); await loadSettings(); await loadJobs(); await loadEvents(); }
 
-let currentBatchId = "";
-let lastJobsVersion = "";
-let jobsLoading = false;
+$("pw-launch").addEventListener("click", () => pwLaunch());
+$("pw-start").addEventListener("click", () => pwStart());
+$("pw-stop").addEventListener("click", () => pwStop());
+$("pw-close-browser").addEventListener("click", () => pwCloseBrowser());
+$("save-settings").addEventListener("click", () => saveSettings());
+$("upload-form").addEventListener("submit", e => uploadResume(e));
+$("analyze-text").addEventListener("click", () => analyzeText());
+$("event-mini").addEventListener("click", () => loadEvents());
 
-async function loadJobs() {
-  let url = "/api/jobs?limit=500";
-  if (currentBatchId) url += "&batch_id=" + encodeURIComponent(currentBatchId);
-  const jobs = await api(url);
-  const tbody = $_("jobs");
-  tbody.innerHTML = "";
-  for (const j of jobs) {
-    const tr = document.createElement("tr");
-    const skipReason = reasonText(j);
-    tr.innerHTML = `
-      <td>${j.score}</td>
-      <td>${escapeHtml(j.status || j.decision || "")}</td>
-      <td><a href="${escapeAttr(j.url)}" target="_blank">${escapeHtml(j.title || "岗位")}</a></td>
-      <td>${escapeHtml(j.company || "")}</td>
-      <td>${escapeHtml(skipReason.slice(0, 160))}</td>
-      <td>${escapeHtml((j.initial_message || "").slice(0, 80))}</td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
-
-async function checkJobsVersion() {
-  if (jobsLoading) return;
-  let url = "/api/jobs/version";
-  if (currentBatchId) url += "?batch_id=" + encodeURIComponent(currentBatchId);
-  const version = await api(url);
-  const token = `${version.batch_id || ""}|${version.count || 0}|${version.latest_updated_at || ""}`;
-  if (token === lastJobsVersion) return;
-  lastJobsVersion = token;
-  jobsLoading = true;
-  try {
-    await loadJobs();
-  } finally {
-    jobsLoading = false;
-  }
-}
-
-async function loadEvents() {
-  const events = await api("/api/events?limit=80");
-  const root = $_("events");
-  root.innerHTML = "";
-  for (const e of events) {
-    const item = document.createElement("div");
-    item.className = "event";
-    item.innerHTML = `
-      <strong>${escapeHtml(e.type)}</strong>
-      <div class="muted">${escapeHtml(e.created_at || "")}</div>
-      <div>${escapeHtml(JSON.stringify(e.payload || {}))}</div>
-    `;
-    root.appendChild(item);
-  }
-}
-
-/* ══════ Load all ══════════════════════════════ */
-
-async function loadAll() {
-  await loadHealth();
-  await loadSettings();
-  await Promise.all([loadResumes(), loadJobs(), loadEvents()]);
-  await pwPollProgress();
-}
-
-function alertError(err) { alert(err.message || String(err)); }
-
-/* ══════ Event bindings ════════════════════════ */
-
-$_("refresh").addEventListener("click", () => loadAll().catch(alertError));
-$_("save-settings").addEventListener("click", () => saveSettings().catch(alertError));
-$_("upload-form").addEventListener("submit", e => uploadResume(e).catch(alertError));
-$_("analyze-text").addEventListener("click", () => analyzeTextResume().catch(alertError));
-
-// Playwright buttons
-$_("pw-launch").addEventListener("click", () => pwLaunchBrowser().catch(alertError));
-$_("pw-start").addEventListener("click", () => pwStartAutomation().catch(alertError));
-$_("pw-stop").addEventListener("click", () => pwStopAutomation().catch(alertError));
-$_("pw-close-browser").addEventListener("click", () => pwCloseBrowser().catch(alertError));
-
-/* ══════ Init ══════════════════════════════════ */
-
-// Mode selector: toggle search input visibility
-document.querySelectorAll('input[name="pw-mode"]').forEach(radio => {
-  radio.addEventListener("change", updateSearchVisibility);
-});
-updateSearchVisibility();
-
-loadAll().catch(alertError);
-setInterval(() => loadHealth().catch(() => {}), 5000);
-setInterval(() => checkJobsVersion().catch(() => {}), 1500);
+init(); updateModeUI();
+setInterval(checkHealth, 8000);
+setInterval(checkVer, 2000);
+setInterval(loadEvents, 5000);
