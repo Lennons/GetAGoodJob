@@ -133,10 +133,22 @@ class BrowserManager:
             if self._playwright: await self._playwright.stop()
         except: pass
         self._page = None; self._context = None; self._browser = None; self._playwright = None
-        # Kill any remaining Chrome process on our port
+        # Kill the Chrome process using our profile directory (force close)
         try:
             import subprocess
-            subprocess.run(["lsof","-ti",f":{CDP_PORT}"], capture_output=True)
+            result = subprocess.run(["lsof","-ti",f":{CDP_PORT}"], capture_output=True, text=True)
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                if pid:
+                    subprocess.run(["kill", "-9", pid], capture_output=True)
+        except: pass
+        # Also kill any Chrome process using our data dir
+        try:
+            result = subprocess.run(["pgrep", "-f", str(CHROME_DATA_DIR)], capture_output=True, text=True)
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                if pid:
+                    subprocess.run(["kill", "-9", pid], capture_output=True)
         except: pass
         await asyncio.sleep(1)
         # Clean lock files so next launch is clean

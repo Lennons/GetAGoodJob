@@ -111,7 +111,7 @@ async function pwStart() {
   try { await api("/api/automation/playwright/start", { method: "POST", body: JSON.stringify({ mode, search_keyword: keyword }) }); running = true; startPolling(); } catch(e) { $("progress-last").textContent = "启动失败：" + e.message; }
 }
 async function pwStop() { try { await api("/api/automation/playwright/stop", { method: "POST" }); stopRunning("手动停止"); } catch(e) {} }
-async function pwCloseBrowser() { try { await api("/api/setup/close-browser", { method: "POST" }); await checkHealth(); } catch(e) {} }
+async function pwCloseBrowser() { try { await api("/api/setup/stop-browser", { method: "POST" }); await checkHealth(); } catch(e) {} }
 
 function stopRunning(reason) {
   running = false; if (timer) { clearInterval(timer); timer = null; }
@@ -173,11 +173,11 @@ async function loadJobs() {
     const reasons = orderedReasons.join("；");
     const risks = (j.risks||[]).map(r=>"⚠"+r).join("；"), note = [reasons,risks].filter(Boolean).join(" ").slice(0,200);
     const ts = j.created_at ? j.created_at.slice(0,16).replace("T"," ") : "−";
-    return `<tr data-job-id="${j.id}"><td style="color:var(--text-secondary);font-size:12px;text-align:center">${seq}</td><td class="score">${j.score}</td><td><span class="tag ${statusTag(s)}">${s||"−"}</span></td><td><a href="${j.url||'#'}" target="_blank" onclick="event.stopPropagation()">${(j.title||"岗位").slice(0,40)}</a></td><td>${j.company||"−"}</td><td style="font-size:12px;color:var(--text-secondary);white-space:nowrap">${ts}</td><td style="font-size:12px;color:var(--text-secondary)">${note||j.initial_message||""}</td></tr>`;
+    return `<tr data-job-seq="${j.seq}"><td style="color:var(--text-secondary);font-size:12px;text-align:center">${seq}</td><td class="score">${j.score}</td><td><span class="tag ${statusTag(s)}">${s||"−"}</span></td><td><a href="${j.url||'#'}" target="_blank" onclick="event.stopPropagation()">${(j.title||"岗位").slice(0,40)}</a></td><td>${j.company||"−"}</td><td style="font-size:12px;color:var(--text-secondary);white-space:nowrap">${ts}</td><td style="font-size:12px;color:var(--text-secondary)">${note||j.initial_message||""}</td></tr>`;
   }).join("");
   $("job-header-count").textContent = `共 ${jobTotal} 条记录`;
   updateJobPagination();
-  $$("#jobs tr").forEach(tr => tr.addEventListener("click", () => { const j = currentJobData.find(x => x.id === tr.dataset.jobId); if (j) openJobDrawer(j); }));
+  $$("#jobs tr").forEach(tr => tr.addEventListener("click", () => { const j = currentJobData.find(x => x.seq === parseInt(tr.dataset.jobSeq)); if (j) openJobDrawer(j); }));
 }
 
 async function checkVer() {

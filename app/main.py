@@ -190,21 +190,30 @@ def upsert_job(
     if batch_id:
         values["batch_id"] = batch_id
     if existing:
-        if existing.status in {"chat_started", "sent"} and values.get("status") == "evaluated":
+        # If this job was previously skipped but now passes → create a new record
+        if existing.status == "skipped" and values.get("status") not in ("skipped",):
+            pass  # fall through to insert new record
+        elif existing.status in {"chat_started", "sent"} and values.get("status") == "evaluated":
+            # Already sent, don't downgrade status
             values.pop("status", None)
-        for key, value in values.items():
-            setattr(existing, key, value)
-        # Keep original batch_id if not provided
-        if not batch_id and existing.batch_id:
-            pass  # don't overwrite existing batch_id
-        db.commit()
-        db.refresh(existing)
-        return existing
+            for key, value in values.items():
+                setattr(existing, key, value)
+            db.commit()
+            db.refresh(existing)
+            return existing
+        else:
+            # Same status, update in place
+            for key, value in values.items():
+                setattr(existing, key, value)
+            if not batch_id and existing.batch_id:
+                pass
+            db.commit()
+            db.refresh(existing)
+            return existing
 
     # Auto-assign sequence number for new jobs
-    if not existing:
-        max_seq = db.scalar(select(func.max(Job.seq))) or 0
-        values["seq"] = max_seq + 1
+    max_seq = db.scalar(select(func.max(Job.seq))) or 0
+    values["seq"] = max_seq + 1
     job = Job(**values)
     db.add(job)
     try:
@@ -676,7 +685,7 @@ async def evaluate_job_endpoint(
 
 @app.get("/api/jobs")
 def list_jobs(limit: int = 20, offset: int = 0, status: Optional[str] = None, batch_id: Optional[str] = None, search: Optional[str] = None, db: Session = Depends(get_db)) -> dict[str, Any]:
-    q = select(Job).order_by(desc(Job.created_at))
+    q = select(Job).order_by(desc(Job.seq))
     if batch_id:
         q = q.where(Job.batch_id == batch_id)
     if status:

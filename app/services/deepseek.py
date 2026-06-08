@@ -14,7 +14,7 @@ from app.services.text import compact_text, keyword_hits
 class DeepSeekClient:
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, model: Optional[str] = None):
         settings = get_settings()
-        self.api_key = api_key if api_key is not None else settings.deepseek_api_key
+        self.api_key = api_key or settings.deepseek_api_key
         self.base_url = (base_url or settings.deepseek_base_url).rstrip("/")
         self.model = model or settings.deepseek_model
 
