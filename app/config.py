@@ -35,6 +35,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "deep_delivery": False,
     "allow_contact_info_in_messages": False,
     "target_cities": [],
+    "filter_city": "重庆",
     "target_job_keyword": "产品经理",
     "salary_expectation": "",
     "blocked_companies": [],

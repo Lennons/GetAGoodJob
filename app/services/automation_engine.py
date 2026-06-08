@@ -557,6 +557,11 @@ class AutomationEngine:
         city = cities[0] if cities else "重庆"
         self._job_tab = f"{keyword}({city})"
         self._job_keyword = keyword
+        self._filter_city = filter_city
+        # Build dynamic URL with filter_city + keyword for direct navigation
+        filter_city = settings.get("filter_city") or city
+        from urllib.parse import quote as _quote
+        self._jobs_url = f"https://www.zhipin.com/web/geek/jobs?city={_quote(filter_city)}&query={_quote(keyword)}"
 
         try:
             bm = get_browser()
@@ -583,16 +588,7 @@ class AutomationEngine:
                 self._emit("selecting", f"定位岗位列表：{self._job_tab}", on_progress)
                 selected = await self._prepare_target_job_list(bm)
                 if not selected.get("ok"):
-                    reason = (
-                        f"expectActive={selected.get('expectActive')}, "
-                        f"citySelected={selected.get('citySelected')}, "
-                        f"cityLabel={selected.get('cityLabel') or '-'}, "
-                        f"currentJobTab={selected.get('currentJobTab') or '-'}, "
-                        f"recommendActive={selected.get('recommendActive')}, "
-                        f"visibleExpectActive={selected.get('visibleExpectActive')}, "
-                        f"pageExpectId={selected.get('pageExpectId') or '-'}"
-                    )
-                    message = f"未能真正切到 {self._job_tab}，已停止，避免在推荐页投递（{reason}）"
+                    message = f"岗位推荐页未加载成功，未找到岗位卡片"
                     self._emit("error", message, on_progress)
                     return self._result(False, message)
                 self._emit(
@@ -620,7 +616,8 @@ class AutomationEngine:
                 # Navigate back to list page for next batch (we may be on a detail/chat page)
                 current_list_url = await bm.current_url()
                 if "/web/geek/jobs" not in current_list_url:
-                    list_url = "https://www.zhipin.com/web/geek/jobs" if self._mode == "recommend" else TARGET_JOBS_URL
+                    from urllib.parse import quote as _quote2
+                    list_url = "https://www.zhipin.com/web/geek/jobs" if self._mode == "recommend" else f"https://www.zhipin.com/web/geek/jobs?query={_quote2(self._job_keyword)}"
                     await bm.navigate(list_url)
                     await asyncio.sleep(2)
                     if await self._check_page_risk(bm, stop_on_risk, on_progress):
@@ -1002,49 +999,21 @@ class AutomationEngine:
         return {"ok": cards > 0, "cardCount": cards, "url": await bm.current_url()}
 
     async def _prepare_target_job_list(self, bm) -> dict:
-        await bm.navigate(TARGET_JOBS_URL)
+        """Navigate to jobs page, select filter city, apply keyword via URL."""
+        await bm.navigate("https://www.zhipin.com/web/geek/jobs")
+        await asyncio.sleep(4)
+        # Click the filter city in the UI
+        await self._select_target_city(bm, self._filter_city)
         await asyncio.sleep(3)
-        state = await self._target_list_state(bm)
-        if state.get("ok"):
-            return state
-
-        attempts = []
-        for attempt in range(1, 4):
-            selected = await self._select_recommended_job_tab(bm, self._job_tab)
-            await asyncio.sleep(3)
-            current = await bm.current_url()
-            if "/web/geek/jobs" not in current:
-                await bm.navigate(TARGET_JOBS_URL)
-                await asyncio.sleep(3)
-
-            city_selected = await self._select_target_city(bm, DEFAULT_CITY)
-            await asyncio.sleep(4)
-            state = await self._target_list_state(bm)
-            state["selected"] = selected
-            state["city_selected"] = city_selected
-            state["attempt"] = attempt
-            attempts.append(
-                {
-                    "attempt": attempt,
-                    "selected": selected,
-                    "city_selected": city_selected,
-                    "ok": state.get("ok"),
-                    "expectActive": state.get("expectActive"),
-                    "citySelected": state.get("citySelected"),
-                    "cityLabel": state.get("cityLabel"),
-                    "recommendActive": state.get("recommendActive"),
-                    "visibleExpectActive": state.get("visibleExpectActive"),
-                    "targetListVisible": state.get("targetListVisible"),
-                    "cityLikeCount": state.get("cityLikeCount"),
-                    "cardCount": state.get("cardCount"),
-                    "sampleTitles": state.get("sampleTitles", [])[:5],
-                }
-            )
-            if state.get("ok"):
-                state["attempts"] = attempts
-                return state
-        state["attempts"] = attempts
-        return state
+        # Now navigate with keyword query to filter
+        from urllib.parse import quote as _quote
+        keyword_url = f"https://www.zhipin.com/web/geek/jobs?query={_quote(self._job_keyword)}"
+        await bm.navigate(keyword_url)
+        await asyncio.sleep(5)
+        cards = await bm.evaluate(
+            "Array.from(document.querySelectorAll('.job-card-box, .job-card, .job-list-item, .recommend-job-card')).filter(el => !!el.offsetParent).length"
+        )
+        return {"ok": cards > 0, "cardCount": cards, "url": await bm.current_url()}
 
     async def _target_list_state(self, bm) -> dict:
         try:

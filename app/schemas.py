@@ -55,6 +55,7 @@ class SettingsPatch(BaseModel):
     deep_delivery: Optional[bool] = None
     allow_contact_info_in_messages: Optional[bool] = None
     target_cities: Optional[list[str]] = None
+    filter_city: Optional[str] = None
     target_job_keyword: Optional[str] = None
     salary_expectation: Optional[str] = None
     blocked_companies: Optional[list[str]] = None

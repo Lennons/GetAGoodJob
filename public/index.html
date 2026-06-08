@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>工作通 — BOSS Chat Assistant</title><link rel="stylesheet" href="/assets/styles.css?v=1780929690"/></head>
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>工作通 — BOSS Chat Assistant</title><link rel="stylesheet" href="/assets/styles.css?v=1780930429"/></head>
 <body>
 <div class="app">
 
@@ -37,7 +37,7 @@
       <div class="card-body">
         <div class="delivery-grid" id="mode-grid">
           <label class="mode-card" id="mode-recommend"><input type="radio" name="pw-mode" value="recommend"/><span class="mode-radio"><span class="mode-radio-inner"></span></span><span class="mode-info"><strong>推荐</strong><span>使用 BOSS 首页推荐流</span></span></label>
-          <label class="mode-card selected" id="mode-expected"><input type="radio" name="pw-mode" value="expected" checked/><span class="mode-radio"><span class="mode-radio-inner"></span></span><span class="mode-info"><strong>岗位推荐</strong><span>按设置中的岗位关键词 + 城市筛选</span></span></label>
+          <label class="mode-card selected" id="mode-expected"><input type="radio" name="pw-mode" value="expected" checked/><span class="mode-radio"><span class="mode-radio-inner"></span></span><span class="mode-info"><strong>岗位推荐</strong><span>按设置中的目标岗位 + 筛选城市</span></span></label>
           <label class="mode-card" id="mode-search"><input type="radio" name="pw-mode" value="search"/><span class="mode-radio"><span class="mode-radio-inner"></span></span><span class="mode-info"><strong>搜索框</strong><span>输入关键词后回车搜索</span></span></label>
         </div>
         <div class="delivery-actions">
@@ -138,11 +138,12 @@
     </div>
 
     <div class="card">
-      <div class="card-header"><h3>关键词设置</h3><p>岗位关键词、目标城市与屏蔽词配置</p></div>
+      <div class="card-header"><h3>关键词设置</h3><p>目标岗位、目标城市、筛选城市与屏蔽词</p></div>
       <div class="card-body">
         <div class="settings-grid">
-          <div class="field"><span class="field-label">岗位关键词</span><input id="target_job_keyword" class="field-input" type="text" placeholder="产品经理"/></div>
-          <div class="field span2"><span class="field-label">目标城市（多选）</span><input id="target_cities" class="field-input" type="text"/></div>
+          <div class="field"><span class="field-label">目标岗位</span><input id="target_job_keyword" class="field-input" type="text" placeholder="产品经理"/></div>
+          <div class="field span2"><span class="field-label">目标城市</span><input id="target_cities" class="field-input" type="text"/></div>
+          <div class="field"><span class="field-label">筛选城市</span><input id="filter_city" class="field-input" type="text" placeholder="重庆"/></div>
           <div class="field span2"><span class="field-label">屏蔽关键词</span><input id="blocked_keywords" class="field-input" type="text"/></div>
         </div>
       </div>
@@ -205,6 +206,6 @@
   <div class="drawer-body" id="job-detail-body"></div>
 </div>
 
-<script src="/assets/app.js?v=1780929690"></script>
+<script src="/assets/app.js?v=1780930429"></script>
 </body>
 </html>
