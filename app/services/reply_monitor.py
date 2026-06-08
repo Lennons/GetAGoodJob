@@ -62,6 +62,40 @@ SEND_REPLY_TMPL = """((text) => {
   return true;
 })"""
 
+# Extract the job detail link from BOSS chat page header
+EXTRACT_JOB_LINK_JS = """(() => {
+  // Look for the job detail link in the chat header
+  const links = Array.from(document.querySelectorAll('a'));
+  for (const a of links) {
+    const href = a.href || '';
+    if (/job_detail/.test(href)) return href;
+  }
+  return null;
+})()"""
+
+# BOSS 直聘聊天窗口的「发送附件简历」按钮
+CLICK_RESUME_BTN_JS = """(() => {
+  // 优先找「发送附件简历」或「发简历」按钮
+  const btns = Array.from(document.querySelectorAll('button, a, span, div[role="button"]'));
+  for (const b of btns) {
+    const t = b.textContent || '';
+    if (/发送附件简历|发送简历|发简历|附件简历/.test(t) && b.offsetParent) {
+      b.click();
+      return {ok: true, text: t.trim()};
+    }
+  }
+  // 尝试找简历图标按钮（通常在聊天工具栏）
+  const icons = document.querySelectorAll('.icon-resume, [class*="resume"], [class*="attachment-resume"]');
+  for (const icon of icons) {
+    const btn = icon.closest('button, a, div[role="button"]');
+    if (btn && btn.offsetParent) {
+      btn.click();
+      return {ok: true, text: 'icon'};
+    }
+  }
+  return {ok: false};
+})()"""
+
 
 class ReplyMonitor:
 
@@ -138,12 +172,40 @@ class ReplyMonitor:
                 return
 
             conv = [{"role": m["role"], "content": m["content"]} for m in messages]
-            result = await generate_reply(resume, None, conv, settings)
+
+            # Look up job score from the chat page's job detail link
+            job_score = 0
+            try:
+                job_url = await bm.evaluate_on(chat_page, EXTRACT_JOB_LINK_JS)
+                if job_url:
+                    import urllib.request as _req
+                    data = json.dumps({"source_key": job_url}).encode()
+                    resp = await asyncio.to_thread(lambda: _req.urlopen(_req.Request(
+                        "http://127.0.0.1:8788/api/jobs/lookup",
+                        data=data, headers={"Content-Type": "application/json"}, method="POST"
+                    ), timeout=5).read())
+                    job_data = json.loads(resp)
+                    job_score = job_data.get("score", 0) if isinstance(job_data, dict) else 0
+            except Exception:
+                pass
+
+            result = await generate_reply(resume, None, conv, settings, job_score=job_score)
 
             if result.get("action") == "wait":
                 return
 
             text = (result.get("message") or "").strip()
+
+            # BOSS asks for resume → click built-in attachment resume button
+            if result.get("action") == "send_resume":
+                resume_sent = await bm.evaluate_on(chat_page, CLICK_RESUME_BTN_JS)
+                await asyncio.sleep(2)
+                if text:
+                    safe_text = json.dumps(text, ensure_ascii=False)
+                    await bm.evaluate_on(chat_page, f"({SEND_REPLY_TMPL})('{safe_text}')")
+                    await asyncio.sleep(2)
+                return
+
             if not text:
                 return
 

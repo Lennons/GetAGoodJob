@@ -20,6 +20,7 @@ class Resume(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     filename: Mapped[str] = mapped_column(String(255), default="")
+    file_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     raw_text: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), nullable=False)
     analysis: Mapped[dict] = mapped_column(JSON, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
@@ -35,6 +36,7 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     resume_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("resumes.id"), nullable=True, index=True)
     source_key: Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    seq: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     url: Mapped[str] = mapped_column(String(1024), default="")
     title: Mapped[str] = mapped_column(String(255), default="")
     company: Mapped[str] = mapped_column(String(255), default="")

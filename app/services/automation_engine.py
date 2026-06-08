@@ -143,10 +143,13 @@ def _looks_like_initial_message(value: Any) -> bool:
 
 def _mark_evaluation_skipped(evaluation: Optional[dict], reason: str) -> dict:
     result = dict(evaluation or {})
-    reasons = [reason]
+    # AI reasons first, technical/skip-line reason last
+    reasons = []
     for item in result.get("reasons") or []:
         if item and item not in reasons and not _looks_like_initial_message(item):
             reasons.append(item)
+    if reason and reason not in reasons:
+        reasons.append(reason)
     result["decision"] = "skip"
     result["status"] = "skipped"
     result["reasons"] = reasons
@@ -529,6 +532,7 @@ class AutomationEngine:
         self._consecutive = 0
         self._session_start = 0.0
         self._on_progress_cb = None
+        self._login_watchdog_task = None
 
     @property
     def running(self) -> bool: return self._running

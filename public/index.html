@@ -1,17 +1,17 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>工作通 — BOSS Chat Assistant</title><link rel="stylesheet" href="/assets/styles.css?v=1780842547"/></head>
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>工作通 — BOSS Chat Assistant</title><link rel="stylesheet" href="/assets/styles.css?v=1780925020"/></head>
 <body>
 <div class="app">
 
 <!-- ══════ Sidebar ══════ -->
 <aside class="sidebar">
   <div class="sidebar-brand"><h1>工作通</h1><span>BOSS Chat Assistant</span></div>
-  <div class="sidebar-badge">v1.0.5 已实现</div>
+  <div class="sidebar-badge">v1.0.7 已实现</div>
   <nav class="sidebar-nav">
     <button class="nav-item active" data-page="dashboard"><span class="nav-dot"></span>自动投递</button>
     <button class="nav-item" data-page="settings"><span class="nav-dot"></span>设置中心</button>
-    <button class="nav-item" data-page="workflow"><span class="nav-dot"></span>处理工作流</button>
+    <button class="nav-item" data-page="datacenter"><span class="nav-dot"></span>数据中心</button>
   </nav>
   <div class="sidebar-footer">
     <div class="cdp-label">Chrome CDP</div>
@@ -84,6 +84,7 @@
           <option value="chat_started">已沟通</option>
           <option value="skipped">已跳过</option>
         </select>
+        <input id="job-search" type="text" placeholder="搜索公司/岗位名称…" style="font-size:12px;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);width:180px"/>
         <span style="flex:1"></span>
       </div>
       <div class="table-wrap">
@@ -126,22 +127,23 @@
           <div class="field"><span class="field-label">最长发送间隔 (ms)</span><input id="cooldown_max_ms" class="field-input" type="number" min="5000" step="1000"/></div>
           <div class="field"><span class="field-label">回复扫描间隔 (秒)</span><input id="reply_poll_seconds" class="field-input" type="number" min="3" max="120" step="1"/></div>
         </div>
+        <div class="field-row">
+          <label class="toggle"><input id="auto_send_initial" type="checkbox"/> 自动发送首句</label>
+          <label class="toggle"><input id="auto_reply" type="checkbox"/> 自动回复</label>
+          <label class="toggle"><input id="stop_on_risk_prompt" type="checkbox"/> 遇到风控停止</label>
+          <label class="toggle"><input id="deep_delivery" type="checkbox"/> 深度投递</label>
+          <label class="toggle"><input id="allow_contact_info_in_messages" type="checkbox"/> 允许联系方式</label>
+        </div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-header"><h3>目标与偏好规则</h3><p>城市、岗位关键词、偏好词与屏蔽词</p></div>
+      <div class="card-header"><h3>关键词设置</h3><p>岗位关键词、目标城市与屏蔽词配置</p></div>
       <div class="card-body">
         <div class="settings-grid">
           <div class="field"><span class="field-label">岗位关键词</span><input id="target_job_keyword" class="field-input" type="text" placeholder="产品经理"/></div>
           <div class="field span2"><span class="field-label">目标城市（多选）</span><input id="target_cities" class="field-input" type="text"/></div>
           <div class="field span2"><span class="field-label">屏蔽关键词</span><input id="blocked_keywords" class="field-input" type="text"/></div>
-        </div>
-        <div class="field-row">
-          <label class="toggle"><input id="auto_send_initial" type="checkbox"/> 自动发送首句</label>
-          <label class="toggle"><input id="auto_reply" type="checkbox"/> 自动回复</label>
-          <label class="toggle"><input id="stop_on_risk_prompt" type="checkbox"/> 遇到风控停止</label>
-          <label class="toggle"><input id="allow_contact_info_in_messages" type="checkbox"/> 允许联系方式</label>
         </div>
       </div>
     </div>
@@ -163,97 +165,35 @@
 
 </section>
 
-<!-- ── PAGE: 处理工作流 ────────────────────── -->
-<section class="page" id="page-workflow">
+<!-- ── PAGE: 数据中心 ──────────────────────── -->
+<section class="page" id="page-datacenter">
 
   <div class="topbar">
-    <div class="topbar-title"><h2>岗位处理工作流</h2><p>从列表页卡片、详情页沟通按钮、招呼语弹窗到聊天页发送的完整链路</p></div>
-    <div class="topbar-right"><span class="badge-status idle"><span class="badge-dot"></span><span>流程可追踪</span></span></div>
+    <div class="topbar-title"><h2>数据中心</h2><p>投递数据总览与 JD 高频技能词分析</p></div>
+    <div class="topbar-right"></div>
+  </div>
+
+  <div class="section row4">
+    <div class="kpi-card"><div class="kpi-label">已扫描</div><div class="kpi-value blue" id="dc-scanned">0</div></div>
+    <div class="kpi-card"><div class="kpi-label">已发送</div><div class="kpi-value green" id="dc-sent">0</div></div>
+    <div class="kpi-card"><div class="kpi-label">已跳过</div><div class="kpi-value yellow" id="dc-skipped">0</div></div>
+    <div class="kpi-card"><div class="kpi-label">异常</div><div class="kpi-value red" id="dc-errors">0</div></div>
   </div>
 
   <div class="section">
     <div class="card">
-      <div class="card-header"><h3>自动开聊 9 步</h3><p>严格通过详情页「立即沟通」按钮发起，不发送默认招呼</p></div>
-      <div class="card-body">
-        <div class="workflow-steps">
-          <div class="wf-step">
-            <div class="wf-num">1</div>
-            <div class="wf-body"><div class="wf-title">点击岗位卡片</div><div class="wf-desc">从列表页定位目标岗位卡片并点击</div></div>
-            <div class="wf-arrow">→</div>
-          </div>
-          <div class="wf-step">
-            <div class="wf-num">2</div>
-            <div class="wf-body"><div class="wf-title">验证详情页</div><div class="wf-desc">等待详情页加载完成，校验页面结构</div></div>
-            <div class="wf-arrow">→</div>
-          </div>
-          <div class="wf-step">
-            <div class="wf-num">3</div>
-            <div class="wf-body"><div class="wf-title">查找立即沟通</div><div class="wf-desc">定位「立即沟通」按钮，确认可交互</div></div>
-            <div class="wf-arrow">→</div>
-          </div>
-          <div class="wf-step">
-            <div class="wf-num">4</div>
-            <div class="wf-body"><div class="wf-title">弹出招呼框</div><div class="wf-desc">点击按钮触发招呼语输入弹窗</div></div>
-            <div class="wf-arrow">→</div>
-          </div>
-          <div class="wf-step">
-            <div class="wf-num">5</div>
-            <div class="wf-body"><div class="wf-title">轮询等待</div><div class="wf-desc">等待弹窗及输入框 #greet 就绪</div></div>
-            <div class="wf-arrow">→</div>
-          </div>
-          <div class="wf-step">
-            <div class="wf-num">6</div>
-            <div class="wf-body"><div class="wf-title">生成 AI 首句</div><div class="wf-desc">基于简历与岗位信息调用 DeepSeek 生成</div></div>
-            <div class="wf-arrow">→</div>
-          </div>
-          <div class="wf-step">
-            <div class="wf-num">7</div>
-            <div class="wf-body"><div class="wf-title">填入 #greet</div><div class="wf-desc">将 AI 开场白填入招呼语输入框</div></div>
-            <div class="wf-arrow">→</div>
-          </div>
-          <div class="wf-step">
-            <div class="wf-num">8</div>
-            <div class="wf-body"><div class="wf-title">继续沟通</div><div class="wf-desc">点击「继续沟通」进入聊天页面</div></div>
-            <div class="wf-arrow">→</div>
-          </div>
-          <div class="wf-step">
-            <div class="wf-num">9</div>
-            <div class="wf-body"><div class="wf-title">Enter 发送</div><div class="wf-desc">在聊天页定位输入框，按 Enter 发送消息</div></div>
-          </div>
+      <div class="card-header"><h3>热词分析</h3><p>AI 从任职要求中提取技术/工具/知识高频词，点击按钮批量分析</p></div>
+      <div class="card-body" style="padding:20px 24px">
+        <div class="hotwords-cloud" id="hotwords-cloud">
+          <span style="color:var(--text-muted);font-size:13px">加载中…</span>
         </div>
-      </div>
-    </div>
-  </div>
 
-  <div class="section row-auto">
-    <div class="card">
-      <div class="card-header"><h3>自动回复基础框架</h3><p>对话轮询待完善，保留消息检测、AI 回复与人工接管</p></div>
-      <div class="card-body">
-        <div class="reply-flow">
-          <div class="reply-bubble boss"><span class="reply-role">招聘方</span><div class="reply-msg">方便发一份更详细的项目经历吗？</div></div>
-          <div class="reply-arrow-big">↓</div>
-          <div class="reply-bubble ai"><span class="reply-role">AI 建议回复</span><div class="reply-msg">可以的，我补充一下核心项目：主要围绕 AI Native 产品、RAG 检索、Agent 自动化...</div></div>
-          <div class="reply-footer">
-            <span class="tag tag-eval">需要人工确认</span>
-            <button class="btn btn-success btn-sm">发送回复</button>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-header"><h3>任务结束报告预览</h3><p>当前在控制台沉淀核心指标</p></div>
-      <div class="card-body">
-        <div class="report-grid">
-          <div class="report-stat"><span class="report-num" id="rpt-evaluated">0</span><span class="report-label">已评估</span></div>
-          <div class="report-stat"><span class="report-num green" id="rpt-sent">0</span><span class="report-label">已发送</span></div>
-          <div class="report-stat"><span class="report-num yellow" id="rpt-skipped">0</span><span class="report-label">已跳过</span></div>
-          <div class="report-stat"><span class="report-num red" id="rpt-errors">0</span><span class="report-label">错误</span></div>
-        </div>
       </div>
     </div>
   </div>
 
 </section>
+
 
 </main>
 </div>
@@ -265,6 +205,6 @@
   <div class="drawer-body" id="job-detail-body"></div>
 </div>
 
-<script src="/assets/app.js?v=1780842547"></script>
+<script src="/assets/app.js?v=1780925020"></script>
 </body>
 </html>

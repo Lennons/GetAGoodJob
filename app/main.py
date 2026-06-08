@@ -88,6 +88,7 @@ def resume_to_dict(resume: Resume) -> dict[str, Any]:
     return {
         "id": resume.id,
         "filename": resume.filename,
+        "file_path": resume.file_path,
         "analysis": resume.analysis,
         "is_active": resume.is_active,
         "created_at": dt(resume.created_at),
@@ -98,6 +99,7 @@ def resume_to_dict(resume: Resume) -> dict[str, Any]:
 def job_to_dict(job: Job) -> dict[str, Any]:
     return {
         "id": job.id,
+        "seq": job.seq,
         "resume_id": job.resume_id,
         "source_key": job.source_key,
         "url": job.url,
@@ -199,6 +201,10 @@ def upsert_job(
         db.refresh(existing)
         return existing
 
+    # Auto-assign sequence number for new jobs
+    if not existing:
+        max_seq = db.scalar(select(func.max(Job.seq))) or 0
+        values["seq"] = max_seq + 1
     job = Job(**values)
     db.add(job)
     try:
@@ -508,7 +514,31 @@ def automation_poll(payload: AutomationPollIn, db: Session = Depends(get_db)) ->
             command = None
     if command and command.get("id") == payload.last_command_id:
         command = None
-    return {"command": command, "state": state}
+
+    # Merge Playwright automation progress so frontend sees real-time stats
+    from app.services.browser_manager import get_browser
+    bm = get_browser()
+    engine = get_engine()
+    stats = engine.stats or _automation_progress.get("stats", {})
+
+    return {
+        "command": command,
+        # Fields frontend pollAutomation() expects
+        "running": engine.running or _automation_progress.get("running", False),
+        "status": engine.status or _automation_progress.get("status", "idle"),
+        "message": _automation_progress.get("message", ""),
+        "last_action": _automation_progress.get("message", ""),
+        "batch_id": _automation_progress.get("batch_id", ""),
+        "browser_running": bm.running,
+        "browser_url": bm.page_url if bm.running else "",
+        "sent": stats.get("sent", 0),
+        "skipped": stats.get("skipped", 0),
+        "errors": stats.get("errors", 0),
+        "current": stats.get("sent", 0) + stats.get("skipped", 0) + stats.get("errors", 0),
+        "total": stats.get("total", 0),
+        "progress_pct": round((stats.get("sent", 0) + stats.get("skipped", 0) + stats.get("errors", 0)) / max(stats.get("total", 1), 1) * 100),
+        "eta": _automation_progress.get("eta", ""),
+    }
 
 
 # ── Settings ──────────────────────────────────────
@@ -547,6 +577,7 @@ async def upload_resume(
     )
     resume = Resume(
         filename=file.filename or target.name,
+        file_path=str(target),
         raw_text=raw_text,
         analysis=analysis,
         is_active=not has_active,
@@ -644,15 +675,188 @@ async def evaluate_job_endpoint(
 
 
 @app.get("/api/jobs")
-def list_jobs(limit: int = 20, offset: int = 0, status: Optional[str] = None, batch_id: Optional[str] = None, db: Session = Depends(get_db)) -> dict[str, Any]:
+def list_jobs(limit: int = 20, offset: int = 0, status: Optional[str] = None, batch_id: Optional[str] = None, search: Optional[str] = None, db: Session = Depends(get_db)) -> dict[str, Any]:
     q = select(Job).order_by(desc(Job.created_at))
     if batch_id:
         q = q.where(Job.batch_id == batch_id)
     if status:
         q = q.where(Job.status == status)
+    if search:
+        pattern = f"%{search}%"
+        q = q.where((Job.title.ilike(pattern)) | (Job.company.ilike(pattern)))
     total = db.scalar(select(func.count()).select_from(q.subquery()))
     jobs = db.scalars(q.offset(offset).limit(min(limit, 500))).all()
     return {"jobs": [job_to_dict(j) for j in jobs], "total": total, "offset": offset, "limit": limit}
+
+
+@app.post("/api/jobs/lookup")
+def lookup_job(payload: dict, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Look up a job by source_key and return score + basic info."""
+    source_key = payload.get("source_key", "")
+    if not source_key:
+        return {}
+    job = db.scalar(select(Job).where(Job.source_key == source_key))
+    if not job:
+        return {}
+    return job_to_dict(job)
+
+@app.get("/api/jobs/keywords")
+def job_keywords(limit: int = 30, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    """Return hot keywords aggregated from the job_keywords table."""
+    from app.models import JobKeyword
+
+    # Count word frequencies
+    rows = db.execute(
+        select(JobKeyword.word, func.count(JobKeyword.id).label("cnt"))
+        .group_by(JobKeyword.word)
+        .order_by(desc("cnt"))
+        .limit(limit)
+    ).all()
+
+    if not rows:
+        return []
+
+    max_count = rows[0][1] if rows else 1
+    # Get sample category for each word
+    result = []
+    for word, cnt in rows:
+        sample = db.scalar(
+            select(JobKeyword.category)
+            .where(JobKeyword.word == word)
+            .limit(1)
+        ) or "skill"
+        result.append({
+            "word": word,
+            "count": cnt,
+            "category": sample,
+            "weight": round(cnt / max_count, 2),
+        })
+    return result
+
+
+@app.post("/api/jobs/keywords/analyze")
+async def analyze_job_keywords(db: Session = Depends(get_db)):
+    """Trigger keyword extraction for all analysable jobs."""
+    from app.models import JobKeyword
+    from app.services.deepseek import extract_job_keywords
+    from app.services.settings import get_app_settings
+
+    settings = get_app_settings(db)
+
+    # Find jobs that have descriptions but haven't been analyzed yet
+    from sqlalchemy import text as _text
+    existing = db.execute(_text(
+        "SELECT DISTINCT job_id FROM job_keywords"
+    )).fetchall()
+    analyzed_ids = {r[0] for r in existing}
+
+    jobs = db.scalars(
+        select(Job).where(
+            Job.description != None,
+            Job.description != "",
+            Job.id.notin_(analyzed_ids) if analyzed_ids else True,
+        )
+    ).all()
+
+    if not jobs:
+        return {"analyzed": 0, "keywords_added": 0, "message": "所有岗位已分析完毕"}
+
+    total_added = 0
+    for job in jobs:
+        try:
+            text = job.description or ""
+            if not text:
+                continue
+            keywords = await extract_job_keywords(text, settings)
+            for kw in keywords:
+                db.add(JobKeyword(
+                    job_id=job.id,
+                    word=kw.get("word", ""),
+                    category=kw.get("category", "skill"),
+                ))
+                total_added += 1
+        except Exception:
+            continue
+
+    db.commit()
+    return {
+        "analyzed": len(jobs),
+        "keywords_added": total_added,
+    }
+
+
+@app.post("/api/jobs/keywords/extract/{job_id}")
+async def extract_single_job_keywords(job_id: str, db: Session = Depends(get_db)):
+    """Extract and store keywords for a single job."""
+    from app.models import JobKeyword
+    from app.services.deepseek import extract_job_keywords
+    from app.services.settings import get_app_settings
+
+    job = db.get(Job, job_id)
+    if not job or not job.description:
+        return {"job_id": job_id, "keywords": []}
+
+    # Delete old keywords for this job
+    from sqlalchemy import delete as _delete
+    db.execute(_delete(JobKeyword).where(JobKeyword.job_id == job_id))
+    db.flush()
+
+    settings = get_app_settings(db)
+    text = job.description or ""
+    keywords = await extract_job_keywords(text, settings)
+
+    added = []
+    for kw in keywords:
+        entry = JobKeyword(
+            job_id=job_id,
+            word=kw.get("word", ""),
+            category=kw.get("category", "skill"),
+        )
+        db.add(entry)
+        added.append({"word": kw.get("word"), "category": kw.get("category")})
+
+    db.commit()
+    return {"job_id": job_id, "keywords": added}
+
+
+@app.post("/api/jobs/keywords/analyze-by-source")
+async def analyze_by_source(payload: dict, db: Session = Depends(get_db)):
+    """Trigger keyword extraction for a job by source_key.
+    If `keywords` is provided in payload, store them directly without calling AI."""
+    from app.models import JobKeyword
+    from app.services.deepseek import extract_job_keywords
+    from app.services.settings import get_app_settings
+
+    source_key = payload.get("source_key", "")
+    if not source_key:
+        return {"ok": False, "reason": "no source_key"}
+
+    job = db.scalar(select(Job).where(Job.source_key == source_key))
+    if not job or not job.description:
+        return {"ok": False, "reason": "job not found"}
+
+    # Check if already analyzed
+    existing = db.scalar(select(JobKeyword).where(JobKeyword.job_id == job.id).limit(1))
+    if existing:
+        return {"ok": True, "reason": "already analyzed", "job_id": job.id}
+
+    # Use pre-extracted keywords if provided, otherwise call AI
+    pre_keywords = payload.get("keywords")
+    if pre_keywords and isinstance(pre_keywords, list):
+        keywords = pre_keywords
+    else:
+        settings = get_app_settings(db)
+        keywords = await extract_job_keywords(job.description, settings)
+
+    for kw in keywords:
+        db.add(JobKeyword(
+            job_id=job.id,
+            word=kw.get("word", ""),
+            category=kw.get("category", "skill"),
+        ))
+
+    db.commit()
+    return {"ok": True, "job_id": job.id, "keywords_count": len(keywords)}
 
 @app.delete("/api/jobs/errors")
 def delete_error_jobs(db: Session = Depends(get_db)) -> dict[str, Any]:

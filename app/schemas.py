@@ -52,6 +52,7 @@ class SettingsPatch(BaseModel):
     reply_poll_seconds: Optional[int] = None
     min_score_to_chat: Optional[int] = None
     stop_on_risk_prompt: Optional[bool] = None
+    deep_delivery: Optional[bool] = None
     allow_contact_info_in_messages: Optional[bool] = None
     target_cities: Optional[list[str]] = None
     target_job_keyword: Optional[str] = None

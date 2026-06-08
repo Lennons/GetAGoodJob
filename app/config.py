@@ -32,6 +32,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "reply_poll_seconds": 8,
     "min_score_to_chat": 55,
     "stop_on_risk_prompt": True,
+    "deep_delivery": False,
     "allow_contact_info_in_messages": False,
     "target_cities": [],
     "target_job_keyword": "产品经理",

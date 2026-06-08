@@ -9,11 +9,11 @@ const api = async (path, opts = {}) => {
 const $ = id => document.getElementById(id);
 const $$ = (sel, root) => (root || document).querySelectorAll(sel);
 
-const FIELDS = ["api_key","model","daily_chat_limit","cooldown_min_ms","cooldown_max_ms","reply_poll_seconds","min_score_to_chat","target_job_keyword","target_cities","blocked_keywords","auto_send_initial","auto_reply","stop_on_risk_prompt","allow_contact_info_in_messages"];
+const FIELDS = ["api_key","model","daily_chat_limit","cooldown_min_ms","cooldown_max_ms","reply_poll_seconds","min_score_to_chat","target_job_keyword","target_cities","blocked_keywords","auto_send_initial","auto_reply","stop_on_risk_prompt","deep_delivery","allow_contact_info_in_messages"];
 function splitList(v) { return String(v||"").split(/[,，\n]/).map(s=>s.trim()).filter(Boolean); }
 function joinList(v) { return Array.isArray(v)?v.join("，"):v||""; }
 
-let timer = null, running = false, batchId = "", lastVer = "", loading = false, currentJobData = [];
+let timer = null, running = false, batchId = "", lastVer = "", loading = false, currentJobData = [], jobSearch = "", searchTimer = null;
 
 // ══════ Page Routing ════════════════════════
 function navigateTo(page) {
@@ -24,7 +24,8 @@ function navigateTo(page) {
   const navBtn = document.querySelector(`.nav-item[data-page="${page}"]`);
   if (navBtn) navBtn.classList.add("active");
   if (page === "settings") loadResumes();
-  if (page === "workflow") updateReportStats();
+  if (page === "datacenter") loadDatacenter();
+  if (page === "workflow") loadDatacenter();
 }
 $$(".nav-item").forEach(b => {
   b.addEventListener("click", () => { const page = b.dataset.page; if (page) navigateTo(page); });
@@ -45,8 +46,8 @@ function openJobDrawer(job) {
       <span style="font-size:12px;color:var(--text-muted)">采集于 ${ts}</span>
     </div>
     ${job.url ? `<a href="${job.url}" target="_blank" style="font-size:12px;color:var(--primary)">在 BOSS 直聘查看 →</a>` : ""}
-    ${(job.reasons||[]).filter(r=>r).length ? `<div class="job-detail-section"><h4>匹配原因</h4>${job.reasons.filter(r=>r).map(r => `<div class="job-detail-reason">${r}</div>`).join("")}</div>` : ""}
-    ${(job.risks||[]).filter(r=>r).length ? `<div class="job-detail-section"><h4>风险提示</h4>${job.risks.filter(r=>r).map(r => `<div class="job-detail-risk">${r}</div>`).join("")}</div>` : ""}
+    ${(job.reasons||[]).filter(r=>r).length ? `<div class="job-detail-section"><h4>跳过原因</h4>${job.reasons.filter(r=>r).map(r => `<div class="job-detail-reason">${cleanReason(r)}</div>`).join("")}</div>` : ""}
+    ${(job.risks||[]).filter(r=>r).length ? `<div class="job-detail-section"><h4>风险提示</h4>${job.risks.filter(r=>r).map(r => `<div class="job-detail-risk">${cleanReason(r)}</div>`).join("")}</div>` : ""}
     ${job.initial_message ? `<div class="job-detail-section"><h4>AI 开场白</h4><div class="job-detail-msg">${job.initial_message}</div></div>` : ""}
     ${job.description ? `<div class="job-detail-section"><h4>职位描述</h4><div class="job-detail-desc">${job.description}</div></div>` : ""}
   `;
@@ -107,10 +108,9 @@ async function pwLaunch() {
 }
 async function pwStart() {
   const mode = getMode(), keyword = getSearch();
-  let url = "/api/automation/start"; if (mode === "search") url += "?keyword=" + encodeURIComponent(keyword);
-  try { await api(url, { method: "POST" }); running = true; startPolling(); } catch(e) { $("progress-last").textContent = "启动失败：" + e.message; }
+  try { await api("/api/automation/playwright/start", { method: "POST", body: JSON.stringify({ mode, search_keyword: keyword }) }); running = true; startPolling(); } catch(e) { $("progress-last").textContent = "启动失败：" + e.message; }
 }
-async function pwStop() { try { await api("/api/automation/stop", { method: "POST" }); stopRunning("手动停止"); } catch(e) {} }
+async function pwStop() { try { await api("/api/automation/playwright/stop", { method: "POST" }); stopRunning("手动停止"); } catch(e) {} }
 async function pwCloseBrowser() { try { await api("/api/setup/close-browser", { method: "POST" }); await checkHealth(); } catch(e) {} }
 
 function stopRunning(reason) {
@@ -142,6 +142,8 @@ async function pollAutomation() {
   } catch(e) {}
 }
 
+// ══════ Helpers ═══════════════════════════════
+function cleanReason(r) { return String(r||"").replace(/:\s*['"]?\w+_not_found['"]?/g, "").replace(/:\s*'NoneType'.*/g, "").replace(/:\s*name\s+'re'.*/g, "").replace(/:\s*job_card_not_found/g, "").replace(/：\s*job_card_not_found/g, ""); }
 // ══════ Jobs ═══════════════════════════════
 let jobPage = 1, jobPageSize = 10, jobTotal = 0, jobStatusFilter = "";
 
@@ -155,28 +157,34 @@ function updateJobPagination() {
 async function loadJobs() {
   const offset = (jobPage - 1) * jobPageSize;
   let url = `/api/jobs?limit=${jobPageSize}&offset=${offset}`;
-  if (batchId) url += "&batch_id=" + encodeURIComponent(batchId);
   if (jobStatusFilter) url += "&status=" + encodeURIComponent(jobStatusFilter);
+  if (jobSearch) url += "&search=" + encodeURIComponent(jobSearch);
   const data = await api(url);
   const jobs = data.jobs; jobTotal = data.total; currentJobData = jobs;
   const statusTag = s => ["sent","chat_started"].includes(s) ? "tag-sent" : ["skipped","skip"].includes(s) ? "tag-skip" : s === "error" ? "tag-err" : s === "evaluated" ? "tag-eval" : "";
   $("jobs").innerHTML = jobs.map((j, i) => {
-    const seq = offset + i + 1;
-    const s = j.status||j.decision||"", reasons = (j.reasons||[]).filter(r=>r).join("；");
-    const risks = (j.risks||[]).map(r=>"⚠"+r).join("；"), note = [reasons,risks].filter(Boolean).join(" ").slice(0,120);
+    const seq = j.seq ?? (data.total - offset - i);
+    const s = j.status||j.decision||"";
+    // Reorder reasons: move "分数 X 低于..." boilerplate to the end, AI reasons first
+    const rawReasons = (j.reasons||[]).map(cleanReason).filter(r=>r);
+    const base = rawReasons.filter(r => !/^分数\s*\d+\s*低于/.test(r));
+    const scoreLine = rawReasons.filter(r => /^分数\s*\d+\s*低于/.test(r));
+    const orderedReasons = [...base, ...scoreLine];
+    const reasons = orderedReasons.join("；");
+    const risks = (j.risks||[]).map(r=>"⚠"+r).join("；"), note = [reasons,risks].filter(Boolean).join(" ").slice(0,200);
     const ts = j.created_at ? j.created_at.slice(0,16).replace("T"," ") : "−";
     return `<tr data-job-id="${j.id}"><td style="color:var(--text-secondary);font-size:12px;text-align:center">${seq}</td><td class="score">${j.score}</td><td><span class="tag ${statusTag(s)}">${s||"−"}</span></td><td><a href="${j.url||'#'}" target="_blank" onclick="event.stopPropagation()">${(j.title||"岗位").slice(0,40)}</a></td><td>${j.company||"−"}</td><td style="font-size:12px;color:var(--text-secondary);white-space:nowrap">${ts}</td><td style="font-size:12px;color:var(--text-secondary)">${note||j.initial_message||""}</td></tr>`;
   }).join("");
   $("job-header-count").textContent = `共 ${jobTotal} 条记录`;
   updateJobPagination();
   $$("#jobs tr").forEach(tr => tr.addEventListener("click", () => { const j = currentJobData.find(x => x.id === tr.dataset.jobId); if (j) openJobDrawer(j); }));
-  updateReportStats();
 }
 
 async function checkVer() {
   if (loading) return;
-  let url = "/api/jobs/version"; if (batchId) url += "?batch_id=" + encodeURIComponent(batchId);
+  let url = "/api/jobs/version";
   if (jobStatusFilter) url += "&status=" + encodeURIComponent(jobStatusFilter);
+  if (jobSearch) url += "&search=" + encodeURIComponent(jobSearch);
   const v = await api(url), token = `${v.batch_id||""}|${v.count||0}|${v.latest_updated_at||""}`;
   if (token === lastVer) return; lastVer = token; loading = true;
   try { await loadJobs(); } finally { loading = false; }
@@ -214,19 +222,55 @@ async function loadResumes() {
   } catch(e) {}
 }
 
-// ══════ Workflow Report ════════════════════
-async function updateReportStats() {
+// ══════ Datacenter ═══════════════════════
+async function loadDatacenter() {
   try {
-    const sent = await api("/api/jobs?limit=1&status=sent");
+    const all = await api("/api/jobs?limit=1");
+    const sent = await api("/api/jobs?limit=1&status=chat_started");
+    const sent2 = await api("/api/jobs?limit=1&status=sent");
     const skipped = await api("/api/jobs?limit=1&status=skipped");
     const errors = await api("/api/jobs?limit=1&status=error");
-    const all = await api("/api/jobs?limit=1");
-    const ev = (all.total||0) - (sent.total||0) - (skipped.total||0) - (errors.total||0);
-    if ($("rpt-evaluated")) $("rpt-evaluated").textContent = ev;
-    if ($("rpt-sent")) $("rpt-sent").textContent = sent.total || 0;
-    if ($("rpt-skipped")) $("rpt-skipped").textContent = skipped.total || 0;
-    if ($("rpt-errors")) $("rpt-errors").textContent = errors.total || 0;
+    const totalSent = (sent.total||0) + (sent2.total||0);
+    const totalSkipped = skipped.total||0;
+    const totalErrors = errors.total||0;
+    const totalScanned = (all.total||0);
+    const dcScanned = $("dc-scanned"); if (dcScanned) dcScanned.textContent = totalScanned;
+    const dcSent = $("dc-sent"); if (dcSent) dcSent.textContent = totalSent;
+    const dcSkipped = $("dc-skipped"); if (dcSkipped) dcSkipped.textContent = totalSkipped;
+    const dcErrors = $("dc-errors"); if (dcErrors) dcErrors.textContent = totalErrors;
+    loadHotKeywords();
   } catch(e) {}
+}
+
+let _hotwordsInited = false;
+async function loadHotKeywords() {
+  const cloud = $("hotwords-cloud");
+  if (!cloud) return;
+  try {
+    let kw = await api("/api/jobs/keywords?limit=20");
+    // Auto-trigger one-time full analysis if no keywords yet
+    if (!kw?.length && !_hotwordsInited) {
+      _hotwordsInited = true;
+      cloud.innerHTML = '<span style="color:var(--text-muted);font-size:13px">正在初始化热词分析…</span>';
+      try {
+        const r = await api("/api/jobs/keywords/analyze", { method: "POST" });
+        kw = await api("/api/jobs/keywords?limit=20");
+      } catch(e) {}
+    }
+    _hotwordsInited = true;
+    if (!kw?.length) { cloud.innerHTML = '<span style="color:var(--text-muted);font-size:13px">暂无热词数据，投递扫描后自动生成</span>'; return; }
+    const maxC = kw[0].count;
+    const catColors = { skill: "#DBEAFE", tool: "#D1FAE5", knowledge: "#FEF3C7" };
+    const catLabels = { skill: "技能", tool: "工具", knowledge: "知识" };
+    cloud.style.justifyContent = "center";
+    cloud.innerHTML = kw.map(k => {
+      const size = 14 + Math.round((k.count / maxC) * 20);
+      const bg = catColors[k.category] || '#EFF6FF';
+      return `<span class="hotwords-tag" style="font-size:${size}px;background:${bg}">${k.word}<span style="font-size:9px;color:var(--text-muted);margin-left:4px">${k.count}</span><span style="font-size:8px;background:var(--border-light);padding:1px 5px;border-radius:4px;margin-left:4px">${catLabels[k.category]||"技能"}</span></span>`;
+    }).join("");
+  } catch(e) {
+    cloud.innerHTML = `<span style="color:var(--danger);font-size:13px">加载失败: ${e.message}</span>`;
+  }
 }
 
 // ══════ Init ═══════════════════════════════
@@ -240,8 +284,11 @@ $("save-settings").addEventListener("click", () => saveSettings());
 $("upload-form").addEventListener("submit", e => uploadResume(e));
 $("analyze-text").addEventListener("click", () => analyzeText());
 $("job-status-filter").addEventListener("change", () => { jobStatusFilter = $("job-status-filter").value; jobPage = 1; loadJobs(); });
+$("job-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { jobSearch = $("job-search").value.trim(); jobPage = 1; loadJobs(); }, 400); });
 $("job-prev").addEventListener("click", () => { if (jobPage > 1) { jobPage--; loadJobs(); } });
 $("job-next").addEventListener("click", () => { const tp = Math.max(1, Math.ceil(jobTotal / jobPageSize)); if (jobPage < tp) { jobPage++; loadJobs(); } });
+
+
 
 init(); updateModeUI();
 setInterval(checkHealth, 8000);
