@@ -533,6 +533,7 @@ class AutomationEngine:
         self._session_start = 0.0
         self._on_progress_cb = None
         self._login_watchdog_task = None
+        self._mode = "expected"
 
     @property
     def running(self) -> bool: return self._running
@@ -544,6 +545,7 @@ class AutomationEngine:
     async def run(self, settings: dict, resume_analysis: dict, on_progress=None, already_sent: set = None, batch_id: str = "", mode: str = "expected", search_keyword: str = "") -> dict:
         self._running = True
         self._on_progress_cb = on_progress
+        self._mode = mode
         self._stats = {"sent": 0, "skipped": 0, "errors": 0, "total": 0}
         self._chat_count = 0
         self._consecutive = 0
@@ -618,7 +620,8 @@ class AutomationEngine:
                 # Navigate back to list page for next batch (we may be on a detail/chat page)
                 current_list_url = await bm.current_url()
                 if "/web/geek/jobs" not in current_list_url:
-                    await bm.navigate(TARGET_JOBS_URL)
+                    list_url = "https://www.zhipin.com/web/geek/jobs" if self._mode == "recommend" else TARGET_JOBS_URL
+                    await bm.navigate(list_url)
                     await asyncio.sleep(2)
                     if await self._check_page_risk(bm, stop_on_risk, on_progress):
                         self._running = False
@@ -992,18 +995,11 @@ class AutomationEngine:
         return {"ok": cards > 0, "cardCount": cards, "mode": "search"}
 
     async def _prepare_recommend_list(self, bm) -> dict:
-        """Stay on recommend tab, ensure city is correct."""
-        await bm.navigate(TARGET_JOBS_URL)
-        await asyncio.sleep(4)
-        city_result = await self._select_target_city(bm, DEFAULT_CITY)
-        await asyncio.sleep(3)
-        state = await self._target_list_state(bm)
-        state["city_selected"] = city_result
-        cards = await bm.evaluate("Array.from(document.querySelectorAll('.job-card-box')).filter(el => !!el.offsetParent).length")
-        state["cardCount"] = cards
-        if not state.get("ok"):
-            state["ok"] = cards > 0 and state.get("citySelected", False)
-        return state
+        """Navigate to BOSS homepage/jobs page without query filters to get the recommend stream."""
+        await bm.navigate("https://www.zhipin.com/web/geek/jobs")
+        await asyncio.sleep(5)
+        cards = await bm.evaluate("Array.from(document.querySelectorAll('.job-card-box, .job-card, .recommend-job-card, .job-list-item')).filter(el => !!el.offsetParent).length")
+        return {"ok": cards > 0, "cardCount": cards, "url": await bm.current_url()}
 
     async def _prepare_target_job_list(self, bm) -> dict:
         await bm.navigate(TARGET_JOBS_URL)
