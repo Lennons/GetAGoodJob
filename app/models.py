@@ -24,6 +24,7 @@ class Resume(Base):
     raw_text: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), nullable=False)
     analysis: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    job_url: Mapped[str] = mapped_column(String(1024), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -51,6 +52,7 @@ class Job(Base):
     reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     risks: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     initial_message: Mapped[str] = mapped_column(Text, nullable=True)
+    job_url: Mapped[str] = mapped_column(String(1024), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -68,6 +70,7 @@ class Conversation(Base):
     ai_reply: Mapped[str] = mapped_column(Text, nullable=True)
     need_human: Mapped[bool] = mapped_column(Boolean, default=False)
     reason: Mapped[str] = mapped_column(Text, nullable=True)
+    job_url: Mapped[str] = mapped_column(String(1024), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -78,6 +81,7 @@ class Event(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     type: Mapped[str] = mapped_column(String(64), index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    job_url: Mapped[str] = mapped_column(String(1024), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
 
@@ -89,6 +93,7 @@ class JobKeyword(Base):
     job_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("jobs.id"), nullable=True, index=True)
     word: Mapped[str] = mapped_column(String(128), index=True)
     category: Mapped[str] = mapped_column(String(32), default="skill")
+    job_url: Mapped[str] = mapped_column(String(1024), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
 
@@ -108,4 +113,5 @@ class AutoReplyLog(Base):
     title: Mapped[str] = mapped_column(String(255), default="")
     message: Mapped[str] = mapped_column(Text, nullable=True)
     conversation_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    job_url: Mapped[str] = mapped_column(String(1024), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)

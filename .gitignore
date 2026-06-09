@@ -5,8 +5,11 @@ __pycache__/
 .env
 .env.*
 !.env.example
-data/*.json
 uploads/*
 !uploads/.gitkeep
 npm-debug.log*
 .DS_Store
+logs/
+data/
+.chrome-boss-assistant-profile/
+*.log

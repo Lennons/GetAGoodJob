@@ -61,7 +61,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/assets", StaticFiles(directory=PUBLIC_DIR), name="assets")
+app.mount("/assets", StaticFiles(directory=PUBLIC_DIR / "assets"), name="assets")
 
 
 @app.on_event("startup")
@@ -273,7 +273,7 @@ async def browser_status() -> dict[str, Any]:
     """获取浏览器状态。"""
     bm = BrowserManager.instance()
     if not bm.running:
-        return {"running": False, "url": "", "profile_dir": str(CHROME_PROFILE_DIR)}
+        return {"running": False, "url": "", "profile_dir": str(Path.home() / ".boss-chat-assistant-chrome-data")}
     return {
         "running": True,
         "url": bm.page_url or "",
@@ -539,6 +539,7 @@ def create_reply_log(payload: dict[str, Any] = Body(...), db: Session = Depends(
         title=payload.get("title", ""),
         message=payload.get("message", ""),
         conversation_id=payload.get("conversation_id"),
+        job_url=payload.get("job_url", ""),
     )
     db.add(log)
     db.commit()
@@ -548,6 +549,7 @@ def create_reply_log(payload: dict[str, Any] = Body(...), db: Session = Depends(
         "company": log.company,
         "title": log.title,
         "message": log.message,
+        "job_url": log.job_url,
         "created_at": dt(log.created_at),
     }
 
@@ -566,6 +568,7 @@ def list_reply_logs(limit: int = 50, offset: int = 0, db: Session = Depends(get_
             "company": log.company,
             "title": log.title,
             "message": log.message,
+            "job_url": log.job_url,
             "created_at": dt(log.created_at),
         } for log in logs
     ]
