@@ -303,6 +303,8 @@ _automation_progress: dict[str, Any] = {
     "stats": {"sent": 0, "skipped": 0, "errors": 0, "total": 0},
 }
 
+_reply_monitor_task: asyncio.Task | None = None
+
 
 @app.get("/api/automation/playwright/status")
 def playwright_automation_status() -> dict[str, Any]:
@@ -329,19 +331,11 @@ async def _run_automation_task(settings: dict, resume_analysis: dict, mode: str 
     _automation_progress["running"] = True
     _automation_progress["status"] = "starting"
     _automation_progress["message"] = "正在初始化..."
-    monitor_task = None
-
     try:
         # Ensure browser is running
         bm = await ensure_browser()
 
-        # Start reply monitor if auto-reply enabled
-        if settings.get("auto_reply"):
-            monitor = get_reply_monitor()
-            monitor_task = asyncio.create_task(
-                monitor.start(settings, resume_analysis)
-            )
-
+        # Reply monitor is manually started via /api/reply-monitor/start button
         # NEVER navigate — use whatever page the user is currently on
         await asyncio.sleep(3)  # Brief wait for any in-flight page render
 
@@ -379,12 +373,9 @@ async def _run_automation_task(settings: dict, resume_analysis: dict, mode: str 
         _automation_progress["status"] = "error"
         _automation_progress["message"] = str(exc)
     finally:
-        if monitor_task and not monitor_task.done():
-            get_reply_monitor().stop()
-            try:
-                await asyncio.wait_for(monitor_task, timeout=5)
-            except asyncio.TimeoutError:
-                monitor_task.cancel()
+        # Don't stop reply monitor — it's a persistent background service
+        # if monitor_task and not monitor_task.done():
+        #     get_reply_monitor().stop()
         _automation_progress["running"] = False
 
 
@@ -547,6 +538,56 @@ def automation_poll(payload: AutomationPollIn, db: Session = Depends(get_db)) ->
         "total": stats.get("total", 0),
         "progress_pct": round((stats.get("sent", 0) + stats.get("skipped", 0) + stats.get("errors", 0)) / max(stats.get("total", 1), 1) * 100),
         "eta": _automation_progress.get("eta", ""),
+    }
+
+
+# ── Reply Monitor (persistent background) ─────────
+
+@app.post("/api/reply-monitor/start")
+async def start_reply_monitor(db: Session = Depends(get_db)):
+    global _reply_monitor_task
+    monitor = get_reply_monitor()
+    if monitor.running:
+        return {"ok": True, "status": "already_running", "replied_count": monitor.replied_count}
+
+    bm = get_browser()
+    if not bm.running:
+        raise HTTPException(status_code=400, detail="浏览器未启动，请先在浏览器中打开BOSS直聘并确保插件连接")
+
+    settings = get_app_settings(db)
+    resume = get_active_resume(db)
+    if not resume.analysis:
+        raise HTTPException(status_code=400, detail="请先上传并分析简历")
+
+    if _reply_monitor_task and not _reply_monitor_task.done():
+        _reply_monitor_task.cancel()
+
+    _reply_monitor_task = asyncio.create_task(monitor.start(settings, resume.analysis))
+    await asyncio.sleep(1)  # Let it start
+    return {"ok": True, "status": monitor.status, "replied_count": monitor.replied_count}
+
+
+@app.post("/api/reply-monitor/stop")
+async def stop_reply_monitor():
+    global _reply_monitor_task
+    monitor = get_reply_monitor()
+    monitor.stop()
+    if _reply_monitor_task and not _reply_monitor_task.done():
+        _reply_monitor_task.cancel()
+        try:
+            await asyncio.wait_for(_reply_monitor_task, timeout=3)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
+    return {"ok": True, "status": monitor.status, "replied_count": monitor.replied_count}
+
+
+@app.get("/api/reply-monitor/status")
+async def reply_monitor_status():
+    monitor = get_reply_monitor()
+    return {
+        "running": monitor.running,
+        "status": monitor.status,
+        "replied_count": monitor.replied_count,
     }
 
 

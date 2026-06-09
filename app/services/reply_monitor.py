@@ -217,7 +217,11 @@ class ReplyMonitor:
                 except Exception as e:
                     logger.warning(f"Monitor cycle error: {e}")
 
-                await asyncio.sleep(poll_sec)
+                # Sleep in 1s chunks so stop is responsive
+                for _ in range(poll_sec):
+                    if not self._running:
+                        break
+                    await asyncio.sleep(1)
 
         except Exception as e:
             logger.error(f"Monitor fatal: {e}")
@@ -238,6 +242,8 @@ class ReplyMonitor:
             pass
         # Open fresh chat page
         try:
+            if not self._running:
+                return None
             logger.info("Opening new chat page...")
             chat_page = await bm.open_tab(BOSS_CHAT_LIST)
             await asyncio.sleep(3)
@@ -248,6 +254,8 @@ class ReplyMonitor:
 
     async def _handle_one(self, bm, chat_page, chat: dict, settings: dict, resume: dict):
         """Click unread LI, read messages, reply, then return to list."""
+        if not self._running:
+            return
         chat_idx = chat.get("idx", 0)
         chat_name = chat.get("name", "?")
         logger.info(f"Opening: [{chat_idx}] {chat_name}")
@@ -308,6 +316,17 @@ class ReplyMonitor:
             logger.info(f"AI: wait for {chat_name}")
             await self._return_to_list(bm, chat_page)
             return
+
+        # Natural delay — check stop signal every second
+        import random as _random
+        delay = _random.randint(30, 60)
+        logger.info(f"Waiting {delay}s before replying (natural pacing)...")
+        for _ in range(delay):
+            if not self._running:
+                logger.info("Reply cancelled (monitor stopped)")
+                await self._return_to_list(bm, chat_page)
+                return
+            await asyncio.sleep(1)
 
         if action == "send_resume":
             await bm.evaluate_on(chat_page, CLICK_RESUME_BTN_JS)

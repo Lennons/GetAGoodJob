@@ -111,6 +111,30 @@ async function pwStart() {
   try { await api("/api/automation/playwright/start", { method: "POST", body: JSON.stringify({ mode, search_keyword: keyword }) }); running = true; startPolling(); } catch(e) { $("progress-last").textContent = "启动失败：" + e.message; }
 }
 async function pwStop() { try { await api("/api/automation/playwright/stop", { method: "POST" }); stopRunning("手动停止"); } catch(e) {} }
+async function replyStart() {
+  const btn = $("pw-reply-start"); btn.disabled = true; btn.textContent = "启动中…";
+  try {
+    const r = await api("/api/reply-monitor/start", { method: "POST" });
+    if (r.ok) {
+      $("pw-reply-start").style.display = "none";
+      $("pw-reply-stop").style.display = "";
+      $("progress-last").textContent = "自动回复已开启 (" + (r.replied_count||0) + "条已回复)";
+    }
+  } catch(e) { $("progress-last").textContent = "启动失败：" + e.message; }
+  btn.disabled = false; btn.textContent = "开启自动回复";
+}
+async function replyStop() {
+  const btn = $("pw-reply-stop"); btn.disabled = true; btn.textContent = "停止中…";
+  try {
+    const r = await api("/api/reply-monitor/stop", { method: "POST" });
+    if (r.ok) {
+      $("pw-reply-start").style.display = "";
+      $("pw-reply-stop").style.display = "none";
+      $("progress-last").textContent = "自动回复已关闭 (" + (r.replied_count||0) + "条已回复)";
+    }
+  } catch(e) { $("progress-last").textContent = "停止失败：" + e.message; }
+  btn.disabled = false; btn.textContent = "关闭自动回复";
+}
 async function pwCloseBrowser() { try { await api("/api/setup/stop-browser", { method: "POST" }); await checkHealth(); } catch(e) {} }
 
 function stopRunning(reason) {
@@ -138,6 +162,16 @@ async function pollAutomation() {
     $("kpi-progress").textContent = (d.current||0) + "/" + (d.total||0);
     const pc = $("progress-counter"); if (pc) pc.textContent = (d.current||0) + " / " + (d.total||0);
     try { const q = await api("/api/automation/quota"); $("kpi-quota").textContent = `${q.used||0} / ${q.limit||0}`; } catch(e) {}
+    try {
+      const rp = await api("/api/reply-monitor/status");
+      if (rp.running) {
+        $("pw-reply-start").style.display = "none";
+        $("pw-reply-stop").style.display = "";
+      } else {
+        $("pw-reply-start").style.display = "";
+        $("pw-reply-stop").style.display = "none";
+      }
+    } catch(e) {}
     await checkVer();
   } catch(e) {}
 }
