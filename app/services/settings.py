@@ -15,9 +15,6 @@ def get_app_settings(db: Session) -> dict[str, Any]:
     row = db.get(Setting, SETTINGS_KEY)
     if not row:
         row = Setting(key=SETTINGS_KEY, value=DEFAULT_SETTINGS.copy())
-        db.add(row)
-        db.commit()
-        db.refresh(row)
     merged = DEFAULT_SETTINGS.copy()
     merged.update(row.value or {})
     return merged

@@ -201,6 +201,17 @@ class BrowserManager:
             raise RuntimeError("详情标签页已关闭")
         return await page.evaluate(expression)
 
+    async def click_on(self, page: Any, selector: str) -> bool:
+        """Click via Playwright real mouse click. BOSS SPA ignores JS el.click()."""
+        if not page or page.is_closed():
+            raise RuntimeError("标签页已关闭")
+        try:
+            el = page.locator(selector).first
+            await el.click(timeout=5000)
+            return True
+        except Exception:
+            return False
+
     async def close_tab(self, page: Any) -> None:
         try:
             if page and not page.is_closed():

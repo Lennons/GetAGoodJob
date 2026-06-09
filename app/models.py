@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
@@ -22,7 +22,7 @@ class Resume(Base):
     filename: Mapped[str] = mapped_column(String(255), default="")
     file_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     raw_text: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), nullable=False)
-    analysis: Mapped[dict] = mapped_column(JSON, nullable=False)
+    analysis: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -43,13 +43,13 @@ class Job(Base):
     salary: Mapped[str] = mapped_column(String(255), default="")
     city: Mapped[str] = mapped_column(String(255), default="")
     description: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), nullable=True)
-    raw: Mapped[dict] = mapped_column(JSON, nullable=False)
+    raw: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     score: Mapped[int] = mapped_column(Integer, default=0)
     decision: Mapped[str] = mapped_column(String(32), default="review")
     status: Mapped[str] = mapped_column(String(32), default="new", index=True)
     batch_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
-    reasons: Mapped[list] = mapped_column(JSON, nullable=False)
-    risks: Mapped[list] = mapped_column(JSON, nullable=False)
+    reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    risks: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     initial_message: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -63,7 +63,7 @@ class Conversation(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     job_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("jobs.id"), nullable=True, index=True)
     resume_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("resumes.id"), nullable=True, index=True)
-    messages: Mapped[list] = mapped_column(JSON, nullable=False)
+    messages: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
     action: Mapped[str] = mapped_column(String(32), default="reply")
     ai_reply: Mapped[str] = mapped_column(Text, nullable=True)
     need_human: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -77,7 +77,7 @@ class Event(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     type: Mapped[str] = mapped_column(String(64), index=True)
-    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
 
@@ -88,7 +88,7 @@ class JobKeyword(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     job_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("jobs.id"), nullable=True, index=True)
     word: Mapped[str] = mapped_column(String(128), index=True)
-    category: Mapped[str] = mapped_column(String(32), default="skill")  # skill, tool, knowledge
+    category: Mapped[str] = mapped_column(String(32), default="skill")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
 
@@ -96,5 +96,5 @@ class Setting(Base):
     __tablename__ = "settings"
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
-    value: Mapped[dict] = mapped_column(JSON, nullable=False)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)

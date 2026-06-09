@@ -101,6 +101,20 @@ def _score_salary(job_salary: str, expected: str) -> int:
     return 2
 
 
+def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
+    """Post-process: if salary gap >= 30% of expected, force skip with score 0."""
+    salary_expectation = settings.get("salary_expectation", "") or ""
+    job_salary = str(job.get("salary", ""))
+    salary_score = _score_salary(job_salary, salary_expectation)
+    if salary_score < 0:
+        evaluation["score"] = 0
+        evaluation["decision"] = "skip"
+        reasons = list(evaluation.get("reasons", []))
+        reasons.append(f"薪资硬拦截：岗位{job_salary}，期望{salary_expectation}，差距过大直接跳过")
+        evaluation["reasons"] = reasons
+    return evaluation
+
+
 def _score_role(job_title: str, target_roles: list[str]) -> int:
     """Score how well the job title matches target roles (0-15)."""
     if not target_roles:
@@ -311,7 +325,8 @@ async def evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
         },
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ]
-    return await client.chat_json(messages, max_tokens=1200)
+    result = await client.chat_json(messages, max_tokens=1200)
+    return _apply_salary_penalty(result, job, settings)
 
 
 async def evaluate_and_extract_keywords(resume: dict, job: dict, settings: dict) -> dict:
@@ -375,15 +390,17 @@ async def evaluate_and_extract_keywords(resume: dict, job: dict, settings: dict)
     ]
     try:
         result = await client.chat_json(messages, max_tokens=2400)
+        evaluation = {
+            "score": result.get("score", 0),
+            "decision": result.get("decision", "review"),
+            "reasons": result.get("reasons", []),
+            "risks": result.get("risks", []),
+            "best_resume_angle": result.get("best_resume_angle", ""),
+            "initial_message": result.get("initial_message", ""),
+        }
+        evaluation = _apply_salary_penalty(evaluation, job, settings)
         return {
-            "evaluation": {
-                "score": result.get("score", 0),
-                "decision": result.get("decision", "review"),
-                "reasons": result.get("reasons", []),
-                "risks": result.get("risks", []),
-                "best_resume_angle": result.get("best_resume_angle", ""),
-                "initial_message": result.get("initial_message", ""),
-            },
+            "evaluation": evaluation,
             "keywords": result.get("keywords", []) or [],
         }
     except Exception:
