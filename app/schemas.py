@@ -45,7 +45,6 @@ class SettingsPatch(BaseModel):
     api_key: Optional[str] = None
     model: Optional[str] = None
     auto_send_initial: Optional[bool] = None
-    auto_reply: Optional[bool] = None
     daily_chat_limit: Optional[int] = None
     cooldown_min_ms: Optional[int] = None
     cooldown_max_ms: Optional[int] = None
@@ -74,6 +73,7 @@ class EventIn(BaseModel):
 
 class AutoReplyLogOut(BaseModel):
     id: int
+    contact_name: str = ""
     company: str = ""
     title: str = ""
     message: str = ""

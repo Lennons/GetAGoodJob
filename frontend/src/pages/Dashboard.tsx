@@ -39,6 +39,8 @@ export default function Dashboard() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [replyLogs, setReplyLogs] = useState<ReplyLog[]>([]);
   const [replyLogsTotal, setReplyLogsTotal] = useState(0);
+  const [replyLogPage, setReplyLogPage] = useState(1);
+  const [replyLogPageSize] = useState(10);
   const [batchId, setBatchId] = useState("");
   const [lastVer, setLastVer] = useState("");
   const [loading, setLoading] = useState(false);
@@ -59,11 +61,11 @@ export default function Dashboard() {
 
   const loadReplyLogs = useCallback(async () => {
     try {
-      const r = await api.listReplyLogs(50, 0);
+      const r = await api.listReplyLogs(replyLogPageSize, (replyLogPage - 1) * replyLogPageSize);
       setReplyLogs(r.logs);
       setReplyLogsTotal(r.total);
     } catch {}
-  }, []);
+  }, [replyLogPage, replyLogPageSize]);
 
   const checkVer = useCallback(async () => {
     if (loading) return;
@@ -160,7 +162,7 @@ export default function Dashboard() {
   useEffect(() => {
     loadJobs();
     loadReplyLogs();
-  }, [loadJobs, loadReplyLogs]);
+  }, [loadJobs, loadReplyLogs, replyLogPage]);
 
   const toggleBrowser = async () => {
     if (browserRunning) {
@@ -220,6 +222,7 @@ export default function Dashboard() {
   };
 
   const totalPages = Math.max(1, Math.ceil(jobTotal / jobPageSize));
+  const replyLogTotalPages = Math.max(1, Math.ceil(replyLogsTotal / replyLogPageSize));
 
   return (
     <section className="page active">
@@ -379,13 +382,23 @@ export default function Dashboard() {
             <h3>自动回复列表</h3>
             <p>AI 自动回复的消息历史，按名字-公司-职位组合记录，共 {replyLogsTotal} 条</p>
           </div>
+          <div className="table-controls">
+            <div className="table-controls-left">
+              <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>共 {replyLogsTotal} 条记录</span>
+            </div>
+            <div className="table-controls-right">
+              <button className="pagination-btn" disabled={replyLogPage <= 1} onClick={() => setReplyLogPage(p => p - 1)}>←</button>
+              <span className="pagination-info">{replyLogPage}/{replyLogTotalPages}</span>
+              <button className="pagination-btn" disabled={replyLogPage >= replyLogTotalPages} onClick={() => setReplyLogPage(p => p + 1)}>→</button>
+            </div>
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th style={{ width: 50, textAlign: "center" }}>#</th>
                   <th style={{ width: 160 }}>时间</th>
-                  <th style={{ width: 200 }}>名字 · 职位</th>
+                  <th style={{ width: 200 }}>回复对象</th>
                   <th style={{ width: 350 }}>回复内容</th>
                 </tr>
               </thead>
@@ -397,13 +410,10 @@ export default function Dashboard() {
                   const ts = log.created_at ? log.created_at.slice(0, 16).replace("T", " ") : "−";
                   return (
                     <tr key={log.id}>
-                      <td style={{ color: "var(--text-secondary)", fontSize: 12, textAlign: "center" }}>{replyLogsTotal - i}</td>
+                      <td style={{ color: "var(--text-secondary)", fontSize: 12, textAlign: "center" }}>{replyLogsTotal - ((replyLogPage - 1) * replyLogPageSize + i)}</td>
                       <td style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>{ts}</td>
                       <td style={{ fontWeight: 600 }}>
-                        {log.job_url 
-                          ? <a href={log.job_url} target="_blank" rel="noreferrer">{[log.title, log.company].filter(Boolean).join(" − ") || "−"}</a>
-                          : ( [log.title, log.company].filter(Boolean).join(" − ") || "−" )
-                        }
+                        {[log.contact_name, log.company, log.title].filter(Boolean).join(" − ") || "−"}
                       </td>
                       <td style={{ fontSize: 12, color: "var(--text-secondary)", maxWidth: 350, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{log.message || "−"}</td>
                     </tr>

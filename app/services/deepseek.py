@@ -542,7 +542,7 @@ async def generate_reply(resume: dict, job: Optional[dict], messages_in: list[di
                 "5. 语气真诚自然，像真人在聊天，不死板不模板化\n"
                 "6. 不要以「您好，我叫XXX」格式开场\n\n"
                 "=== 行动决策 ===\n"
-                "- 招聘方索要简历/附件 → action=send_resume，message 1-2句得体话术\n"
+                "- 招聘方索要简历/附件 → action=send_resume，message 先确认已发送简历，再自然争取面试机会（「简历中有相关项目经验，方便安排面试深入聊一下吗」），控制在 50-120 字，真诚不油滑\n"
                 "- 招聘方明确拒绝 → action可 rebuttal（若岗位匹配度高）或 decline\n"
                 "- 招聘方问了开放性问题/表达兴趣，且你能从简历中找到匹配点回应 → action=reply\n"
                 "- 系统消息/自动回复/竞争者分析 → action=wait（不需要回复）\n"
@@ -572,9 +572,9 @@ def _fallback_generate_reply(messages_in: list[dict], job_score: int = 0) -> dic
     if asks_resume:
         return {
             "action": "send_resume",
-            "message": "您好，这是我的简历，请您查收。期待跟您进一步沟通！",
+            "message": "您好，这是我的简历，请您查收。简历中有相关项目经验，方便的话可以安排面试进一步沟通，面试才能真正了解一个人。",
             "need_human": False,
-            "reason": "fallback: boss asked for resume",
+            "reason": "fallback: boss asked for resume + interview pitch",
         }
 
     is_rejection = any(kw in boss_text for kw in ["不合适", "不考虑", "已招到", "不考虑了", "抱歉", "暂时不需要", "不太合适", "不匹配", "不符合", "暂停招聘", "不适合", "经验不足"])

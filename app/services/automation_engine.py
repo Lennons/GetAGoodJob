@@ -603,6 +603,68 @@ class AutomationEngine:
             stop_on_risk = bool(settings.get("stop_on_risk_prompt", True))
 
             processed: set[str] = set()
+
+            # ── 优先处理已评分 / 异常岗位 ──────────────────────
+            from app.database import SessionLocal as _PrioritySL
+            from app.models import Job as _PriorityJob
+            _pdb = _PrioritySL()
+            try:
+                _pending_jobs = _pdb.query(_PriorityJob).filter(
+                    _PriorityJob.status.in_(["evaluated", "error"]),
+                    _PriorityJob.url != ""
+                ).order_by(_PriorityJob.seq).all()
+                _pdb.close()
+                _pdb = None
+                if _pending_jobs:
+                    self._emit(
+                        "running",
+                        f"优先处理 {len(_pending_jobs)} 个已评分/异常岗位...",
+                        on_progress,
+                    )
+                    for _pj in _pending_jobs:
+                        if not self._running:
+                            break
+                        if self._chat_count >= daily_limit:
+                            self._emit("paused", f"达上限 {daily_limit}", on_progress)
+                            break
+                        sk = _pj.source_key or (_pj.url or "").split("?")[0]
+                        if already_sent and sk in already_sent:
+                            continue
+                        if sk in processed:
+                            continue
+                        processed.add(sk)
+                        _card = {
+                            "url": _pj.url,
+                            "source_key": sk,
+                            "title": _pj.title,
+                            "company": _pj.company,
+                            "salary": _pj.salary,
+                            "city": _pj.city,
+                            "description": _pj.description,
+                        }
+                        try:
+                            _msg = await self._process_one(
+                                bm, _pj.url, settings, resume,
+                                min_score, auto_send,
+                                idx=self._stats["total"],
+                                batch_id=batch_id,
+                                on_progress=on_progress,
+                                job_card=_card,
+                            )
+                            self._emit("running", _msg, on_progress)
+                        except Exception as _exc:
+                            self._stats["errors"] += 1
+                            self._emit("running", f"优先处理异常: {_exc}", on_progress)
+                        delay = random.randint(cooldown_min, cooldown_max) / 1000
+                        self._emit("running", f"等待 {delay:.0f}s...", on_progress)
+                        await asyncio.sleep(delay)
+                if not self._running:
+                    self._stats["total"] = max(self._stats["total"], len(_pending_jobs))
+                    return self._result(True, f"优先处理完成 — 发送 {self._stats['sent']}，跳过 {self._stats['skipped']}")
+            finally:
+                if _pdb:
+                    _pdb.close()
+
             empty_rounds = 0
             stop_all = False
             self._emit("extracting", "提取岗位列表...", on_progress)

@@ -125,35 +125,109 @@ EXTRACT_JOB_LINK_JS = """(() => {
 })()"""
 
 CLICK_RESUME_BTN_JS = """(() => {
-  const btns = Array.from(document.querySelectorAll('button, a, span, div[role="button"]'));
-  for (const b of btns) {
-    const t = b.textContent || '';
-    if (/发送附件简历|发送简历|发简历|附件简历/.test(t) && b.offsetParent) {
-      b.click();
-      return {ok: true, text: t.trim()};
+  // Find and click the "发简历" toolbar button (Vue component, class toolbar-btn)
+  const el = Array.from(document.querySelectorAll('div.toolbar-btn')).find(e => {
+    const t = (e.textContent || '').trim();
+    return t === '发简历' || t === '发送简历';
+  });
+  if (el) {
+    el.click();
+    return {ok: true, text: (el.textContent || '').trim()};
+  }
+  // Fallback: broader search
+  const all = Array.from(document.querySelectorAll('*'));
+  for (const e of all) {
+    const t = (e.textContent || '').trim();
+    if (t === '发简历' && (e.offsetWidth || e.offsetHeight)) {
+      e.click();
+      return {ok: true, text: '发简历'};
     }
   }
-  return {ok: false};
+  return {ok: false, reason: 'resume_btn_not_found'};
+})()"""
+SELECT_RESUME_IN_DIALOG_JS = """(() => {
+  // After clicking "发简历", a dialog "请选择需要投递的简历" appears.
+  // We need to: (1) click resume item to select, (2) click enabled "发送" button
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+  return (async () => {
+    for (let i = 0; i < 30; i++) {
+      await wait(300);
+
+      // Find the active dialog
+      const dialog = document.querySelector('.dialog-wrap.active, .boss-dialog__wrapper, [class*="choose-resume"]');
+      if (!dialog) continue;
+
+      // Step 1: Click the first resume list item to select it
+      const items = dialog.querySelectorAll('.resume-list .list-item, .list-item, li.list-item');
+      for (const item of items) {
+        if (item.offsetWidth > 0) {
+          item.click();
+          await wait(500);
+          break;
+        }
+      }
+
+      // Step 2: Find the "发送" (send) button and click it when enabled
+      const sendBtn = dialog.querySelector('.btn-confirm, button.btn-sure-v2, button[class*="btn-confirm"]');
+      if (sendBtn && !sendBtn.disabled && sendBtn.offsetWidth > 0) {
+        sendBtn.click();
+        await wait(500);
+        return {ok: true, step: 'sent'};
+      }
+      
+      // Also try btn-sure-v2 that's NOT disabled
+      const anySendBtn = dialog.querySelector('button.btn-sure-v2:not(.disabled)');
+      if (anySendBtn && anySendBtn.offsetWidth > 0) {
+        anySendBtn.click();
+        await wait(500);
+        return {ok: true, step: 'sent_v2'};
+      }
+    }
+    return {ok: false, reason: 'dialog_send_failed'};
+  })();
 })()"""
 
 
-
-EXTRACT_COMPANY_TITLE_JS = """(() => {
-  const result = { company: "", title: "" };
-  const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
-  const els = Array.from(document.querySelectorAll('.name-text, .company-name, .job-name, .chat-top-name, [class*="name"], [class*="title"]'));
-  for (const el of els) {
-    if (!visible(el)) continue;
-    const t = (el.textContent || "").trim();
-    if (!t || t.length > 50) continue;
-    if (!result.company && (t.includes("公司") || t.includes("科技") || t.includes("集团") || t.length > 4)) result.company = t;
-    if (!result.title && (t.includes("经理") || t.includes("工程师") || t.includes("设计师") || t.includes("产品"))) result.title = t;
+EXTRACT_CONTACT_INFO_JS = """(() => {
+  // Extract contact name, company and job title from the active chat list item.
+  // BOSS chat list HTML structure:
+  //   <span class="name-box">
+  //     <span class="name-text">姓名</span>
+  //     <span>公司名</span>
+  //     <i class="vline"></i>
+  //     <span>职位</span>
+  //   </span>
+  const result = { name: "", company: "", title: "" };
+  
+  // Try active/selected chat item first
+  const activeItem = document.querySelector('.friend-content.selected, li[role="listitem"].active, li[role="listitem"][class*="active"]');
+  const item = activeItem || document.querySelector('li[role="listitem"]');
+  if (!item) return result;
+  
+  const nameBox = item.querySelector('.name-box');
+  if (!nameBox) return result;
+  
+  // Name: .name-text span
+  const nameEl = nameBox.querySelector('.name-text');
+  if (nameEl) result.name = (nameEl.textContent || '').trim();
+  
+  // Company & title: all spans in name-box, skip name-text and skip empty
+  const spans = Array.from(nameBox.querySelectorAll('span'));
+  let foundNonName = false;
+  for (const s of spans) {
+    const t = (s.textContent || '').trim();
+    if (!t) continue;
+    if (s.classList.contains('name-text')) continue;
+    if (!foundNonName) {
+      result.company = t;
+      foundNonName = true;
+    } else {
+      result.title = t;
+      break;
+    }
   }
-  const linkEl = Array.from(document.querySelectorAll('a')).find(a => /job_detail/.test(a.href || ""));
-  if (linkEl) {
-    const linkText = (linkEl.textContent || "").trim();
-    if (linkText && linkText.length < 50 && linkText.length > 2) result.title = result.title || linkText;
-  }
+  
   return result;
 })()"""
 class ReplyMonitor:
@@ -234,7 +308,19 @@ class ReplyMonitor:
                     self._replied_count += 1
 
                 except Exception as e:
+                    msg = str(e)
                     logger.warning(f"Monitor cycle error: {e}")
+                    # Auto-restart browser if connection died
+                    if "closed" in msg.lower() or "transport" in msg.lower() or "handler" in msg.lower():
+                        try:
+                            logger.warning("Browser connection lost, restarting browser...")
+                            await bm.stop()
+                            await bm.start()
+                            chat_page = None
+                            await asyncio.sleep(3)
+                            logger.info("Browser restarted")
+                        except Exception as restart_e:
+                            logger.error(f"Browser restart failed: {restart_e}")
 
                 # Sleep in 1s chunks so stop is responsive
                 for _ in range(poll_sec):
@@ -302,7 +388,7 @@ class ReplyMonitor:
         company = chat_name
         job_title = ""
         try:
-            info = await bm.evaluate_on(chat_page, EXTRACT_COMPANY_TITLE_JS) or {}
+            info = await bm.evaluate_on(chat_page, EXTRACT_CONTACT_INFO_JS) or {}
             if info.get("company"):
                 company = info["company"]
             if info.get("title"):
@@ -360,8 +446,29 @@ class ReplyMonitor:
             await asyncio.sleep(1)
 
         if action == "send_resume":
-            await bm.evaluate_on(chat_page, CLICK_RESUME_BTN_JS)
-            await asyncio.sleep(1.5)
+            # Step 1: Click "发简历" toolbar button using native Playwright click
+            # (JS click() doesn't trigger Vue event handlers on BOSS)
+            pos_json = await bm.evaluate_on(chat_page, """(() => {
+                const el = Array.from(document.querySelectorAll('div.toolbar-btn')).find(e => {
+                    const t = (e.textContent || '').trim();
+                    return t === '发简历' || t === '发送简历';
+                });
+                if (!el) return JSON.stringify(null);
+                const r = el.getBoundingClientRect();
+                return JSON.stringify({x: r.x + r.width/2, y: r.y + r.height/2});
+            })()""")
+            import json as _json
+            pos = _json.loads(pos_json)
+            if pos:
+                await chat_page.mouse.click(pos['x'], pos['y'])
+                logger.info(f"Native click on 发简历 at ({pos['x']}, {pos['y']})")
+            else:
+                logger.warning(f"Resume button not found for {chat_name}")
+            await asyncio.sleep(2)
+            # Step 2: Handle the resume dialog — select resume and click send
+            dialog_result = await bm.evaluate_on(chat_page, SELECT_RESUME_IN_DIALOG_JS)
+            logger.info(f"Resume dialog result: {dialog_result}")
+            await asyncio.sleep(2)
 
         if text:
             # Type reply into chat input and send
@@ -392,6 +499,7 @@ class ReplyMonitor:
             # Log the reply
             try:
                 log_data = json.dumps({
+                    "contact_name": contact_name,
                     "company": company,
                     "title": job_title,
                     "message": text[:500],

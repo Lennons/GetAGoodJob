@@ -243,7 +243,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 @app.get("/api/version")
 def app_version() -> dict[str, Any]:
-    return {"version": "1.0.13"}
+    return {"version": "1.0.17"}
 
 
 # ── Browser (Playwright) ───────────────────────────
@@ -565,6 +565,7 @@ def list_reply_logs(limit: int = 50, offset: int = 0, db: Session = Depends(get_
     items = [
         {
             "id": log.id,
+            "contact_name": log.contact_name,
             "company": log.company,
             "title": log.title,
             "message": log.message,

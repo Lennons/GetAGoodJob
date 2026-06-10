@@ -109,6 +109,7 @@ class AutoReplyLog(Base):
     __tablename__ = "auto_reply_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    contact_name: Mapped[str] = mapped_column(String(255), default="")
     company: Mapped[str] = mapped_column(String(255), default="")
     title: Mapped[str] = mapped_column(String(255), default="")
     message: Mapped[str] = mapped_column(Text, nullable=True)

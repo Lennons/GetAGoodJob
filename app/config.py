@@ -25,7 +25,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "api_key": "",
     "model": "deepseek-v4-flash",
     "auto_send_initial": True,
-    "auto_reply": True,
     "daily_chat_limit": 50,
     "cooldown_min_ms": 9000,
     "cooldown_max_ms": 18000,

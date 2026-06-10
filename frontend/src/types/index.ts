@@ -79,6 +79,7 @@ export interface ReplyStatus {
 
 export interface ReplyLog {
   id: number;
+  contact_name: string;
   company: string;
   title: string;
   message: string;
