@@ -112,6 +112,7 @@ class AutoReplyLog(Base):
     contact_name: Mapped[str] = mapped_column(String(255), default="")
     company: Mapped[str] = mapped_column(String(255), default="")
     title: Mapped[str] = mapped_column(String(255), default="")
+    role: Mapped[str] = mapped_column(String(255), default="")
     message: Mapped[str] = mapped_column(Text, nullable=True)
     conversation_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     job_url: Mapped[str] = mapped_column(String(1024), default="")

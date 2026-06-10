@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+          cd ..
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          ZIP="boss-assistant-${VERSION}.zip"
+          zip -r "${ZIP}" \
+            app/ public/ \
+            start.command start.bat \
+            Dockerfile requirements.txt \
+            alembic/ alembic.ini \
+            -x "*.pyc" -x "*/__pycache__/*" -x ".git/*" -x "logs/*" -x ".venv/*"
+          echo "ZIP_FILE=${ZIP}" >> $GITHUB_ENV
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ github.ref_name }}"
+          body: |
+            ## BOSS 直聊助手 ${{ github.ref_name }}
+
+            ### 使用方法
+            - **Mac**：解压后双击 `start.command`
+            - **Windows**：解压后双击 `start.bat`
+            - **Docker**：`docker build -t boss-assistant . && docker run -p 8788:8788 boss-assistant`
+
+            首次启动会自动创建虚拟环境并安装依赖。
+
+            ### 前置条件
+            - Python 3.11+
+            - MySQL 8.0+（数据库名 `boss_chat_assistant`）
+          files: "boss-assistant-${{ github.ref_name }}.zip"
+          generate_release_notes: true

@@ -22,9 +22,17 @@ RISK_PATTERNS = re.compile(
 )
 
 LOGIN_URL_PATTERNS = re.compile(
-    r"(/web/user/|/web/geek/login|/account/login|/login\b)",
+    r"(/web/geek/login|/account/login|/login\b)",
     re.IGNORECASE,
 )
+
+LOGIN_PAGE_DETECT_JS = """(() => {
+  const inputs = document.querySelectorAll('input[placeholder*="手机"], input[placeholder*="验证码"]');
+  const text = (document.body.innerText || '').slice(0, 200);
+  const hasLogin = inputs.length > 0 && (text.includes('登录') || text.includes('扫码') || text.includes('验证码登录'));
+  return {url: location.href, hasLoginForm: hasLogin, inputs: inputs.length};
+})()"""
+
 
 HARD_DAILY_LIMIT = 80
 MAX_SESSION_SEC = 25 * 60
@@ -534,6 +542,7 @@ class AutomationEngine:
         self._on_progress_cb = None
         self._login_watchdog_task = None
         self._mode = "expected"
+        self._run_done = None  # lazily created in run()
 
     @property
     def running(self) -> bool: return self._running
@@ -543,6 +552,12 @@ class AutomationEngine:
     def stats(self) -> dict: return dict(self._stats)
 
     async def run(self, settings: dict, resume_analysis: dict, on_progress=None, already_sent: set = None, batch_id: str = "", mode: str = "expected", search_keyword: str = "") -> dict:
+        # Wait for any previous run to fully exit before starting a new one
+        if self._run_done is None:
+            self._run_done = asyncio.Event()
+            self._run_done.set()
+        await self._run_done.wait()
+        self._run_done.clear()
         self._running = True
         self._on_progress_cb = on_progress
         self._mode = mode
@@ -565,6 +580,96 @@ class AutomationEngine:
             if not bm.running:
                 self._emit("error", "浏览器未运行", on_progress)
                 return self._result(False, "no_browser")
+
+            daily_limit = min(int(settings.get("daily_chat_limit", 50)), HARD_DAILY_LIMIT)
+            min_score = int(settings.get("min_score_to_chat", 72))
+            cooldown_min = max(int(settings.get("cooldown_min_ms", 9000)), 5000)
+            cooldown_max = max(int(settings.get("cooldown_max_ms", 18000)), cooldown_min + 5000)
+            auto_send = bool(settings.get("auto_send_initial", True))
+            stop_on_risk = bool(settings.get("stop_on_risk_prompt", True))
+
+            processed: set[str] = set()
+
+            # ── 优先处理已评分 / 异常岗位 ──────────────────────
+            from app.database import SessionLocal as _PrioritySL
+            from app.models import Job as _PriorityJob
+            _pdb = _PrioritySL()
+            try:
+                _pending_jobs = _pdb.query(_PriorityJob).filter(
+                    _PriorityJob.status.in_(["evaluated", "error"]),
+                    _PriorityJob.url != ""
+                ).order_by(_PriorityJob.seq).all()
+                _pdb.close()
+                _pdb = None
+                if _pending_jobs:
+                    _priority_total = len(_pending_jobs)
+                    self._stats["total"] = _priority_total
+                    self._emit(
+                        "priority",
+                        f"开始优先处理 {_priority_total} 个已评分/异常岗位",
+                        on_progress,
+                    )
+                    _priority_idx = 0
+                    for _pj in _pending_jobs:
+                        if not self._running:
+                            break
+                        if self._chat_count >= daily_limit:
+                            self._emit("paused", f"达上限 {daily_limit}", on_progress)
+                            break
+                        sk = _pj.source_key or (_pj.url or "").split("?")[0]
+                        if sk in processed:
+                            continue
+                        processed.add(sk)
+                        _priority_idx += 1
+                        _card = {
+                            "url": _pj.url,
+                            "source_key": sk,
+                            "title": _pj.title,
+                            "company": _pj.company,
+                            "salary": _pj.salary,
+                            "city": _pj.city,
+                            "description": _pj.description,
+                        }
+                        self._stats["sent"] = self._stats.get("sent", 0)
+                        self._stats["skipped"] = self._stats.get("skipped", 0)
+                        self._stats["errors"] = self._stats.get("errors", 0)
+                        label = f"优先 {_priority_idx}/{_priority_total}"
+                        _pre_eval = {
+                            "score": _pj.score,
+                            "decision": _pj.decision or "contact",
+                            "status": "evaluated",
+                            "reasons": list(_pj.reasons or []),
+                            "risks": list(_pj.risks or []),
+                            "initial_message": _pj.initial_message or "",
+                        }
+                        try:
+                            _msg = await self._process_one(
+                                bm, _pj.url, settings, resume_analysis,
+                                min_score, auto_send,
+                                idx=_priority_idx - 1,
+                                batch_id=batch_id,
+                                on_progress=on_progress,
+                                job_card=_card,
+                                pre_eval=_pre_eval,
+                            )
+                            self._emit("running", f"[{label}] {_msg}", on_progress)
+                        except Exception as _exc:
+                            self._stats["errors"] += 1
+                            self._emit("running", f"[{label}] 异常: {_exc}", on_progress)
+                        delay = random.randint(cooldown_min, cooldown_max) / 1000
+                        await asyncio.sleep(delay)
+                    self._stats["total"] = self._stats.get("sent", 0) + self._stats.get("skipped", 0) + self._stats.get("errors", 0)
+                    self._emit(
+                        "completed",
+                        f"优先处理完成 — 发送 {self._stats['sent']}，跳过 {self._stats['skipped']}，错误 {self._stats['errors']}",
+                        on_progress,
+                    )
+                if not self._running:
+                    return self._result(True, f"优先处理完成 — 发送 {self._stats['sent']}，跳过 {self._stats['skipped']}")
+            finally:
+                if _pdb:
+                    _pdb.close()
+
 
             # 根据模式选择列表来源
             if mode == "search":
@@ -594,76 +699,6 @@ class AutomationEngine:
                     on_progress,
                 )
             await asyncio.sleep(1)
-
-            daily_limit = min(int(settings.get("daily_chat_limit", 50)), HARD_DAILY_LIMIT)
-            min_score = int(settings.get("min_score_to_chat", 72))
-            cooldown_min = max(int(settings.get("cooldown_min_ms", 9000)), 5000)
-            cooldown_max = max(int(settings.get("cooldown_max_ms", 18000)), cooldown_min + 5000)
-            auto_send = bool(settings.get("auto_send_initial", True))
-            stop_on_risk = bool(settings.get("stop_on_risk_prompt", True))
-
-            processed: set[str] = set()
-
-            # ── 优先处理已评分 / 异常岗位 ──────────────────────
-            from app.database import SessionLocal as _PrioritySL
-            from app.models import Job as _PriorityJob
-            _pdb = _PrioritySL()
-            try:
-                _pending_jobs = _pdb.query(_PriorityJob).filter(
-                    _PriorityJob.status.in_(["evaluated", "error"]),
-                    _PriorityJob.url != ""
-                ).order_by(_PriorityJob.seq).all()
-                _pdb.close()
-                _pdb = None
-                if _pending_jobs:
-                    self._emit(
-                        "running",
-                        f"优先处理 {len(_pending_jobs)} 个已评分/异常岗位...",
-                        on_progress,
-                    )
-                    for _pj in _pending_jobs:
-                        if not self._running:
-                            break
-                        if self._chat_count >= daily_limit:
-                            self._emit("paused", f"达上限 {daily_limit}", on_progress)
-                            break
-                        sk = _pj.source_key or (_pj.url or "").split("?")[0]
-                        if already_sent and sk in already_sent:
-                            continue
-                        if sk in processed:
-                            continue
-                        processed.add(sk)
-                        _card = {
-                            "url": _pj.url,
-                            "source_key": sk,
-                            "title": _pj.title,
-                            "company": _pj.company,
-                            "salary": _pj.salary,
-                            "city": _pj.city,
-                            "description": _pj.description,
-                        }
-                        try:
-                            _msg = await self._process_one(
-                                bm, _pj.url, settings, resume,
-                                min_score, auto_send,
-                                idx=self._stats["total"],
-                                batch_id=batch_id,
-                                on_progress=on_progress,
-                                job_card=_card,
-                            )
-                            self._emit("running", _msg, on_progress)
-                        except Exception as _exc:
-                            self._stats["errors"] += 1
-                            self._emit("running", f"优先处理异常: {_exc}", on_progress)
-                        delay = random.randint(cooldown_min, cooldown_max) / 1000
-                        self._emit("running", f"等待 {delay:.0f}s...", on_progress)
-                        await asyncio.sleep(delay)
-                if not self._running:
-                    self._stats["total"] = max(self._stats["total"], len(_pending_jobs))
-                    return self._result(True, f"优先处理完成 — 发送 {self._stats['sent']}，跳过 {self._stats['skipped']}")
-            finally:
-                if _pdb:
-                    _pdb.close()
 
             empty_rounds = 0
             stop_all = False
@@ -724,6 +759,9 @@ class AutomationEngine:
                     on_progress,
                 )
 
+                # Track batch total for progress denominator
+                self._stats["total"] += len(fresh_jobs)
+
                 for job_card in fresh_jobs:
                     if not self._running:
                         stop_all = True
@@ -738,8 +776,7 @@ class AutomationEngine:
                         break
 
                     url = job_card["url"]
-                    idx = self._stats["total"]
-                    self._stats["total"] += 1
+                    idx = self._stats.get("sent", 0) + self._stats.get("skipped", 0) + self._stats.get("errors", 0)
 
                     if await self._check_page_risk(bm, stop_on_risk, on_progress):
                         self._stats["errors"] += 1
@@ -820,6 +857,8 @@ class AutomationEngine:
             return self._result(False, str(exc))
         finally:
             self._running = False
+            if self._run_done:
+                self._run_done.set()
             if self._login_watchdog_task and not self._login_watchdog_task.done():
                 self._login_watchdog_task.cancel()
             # Safety net: final progress update for unexpected stop paths
@@ -865,25 +904,29 @@ class AutomationEngine:
         batch_id="",
         on_progress=None,
         job_card: Optional[dict] = None,
+        pre_eval: Optional[dict] = None,
     ) -> str:
         from app.services.deepseek import evaluate_job, generate_initial_message
 
         job_card = job_card or {"url": url, "source_key": url.split("?")[0]}
         title = (job_card.get("title") or "?")[:60]
 
-        # Step 1: Score using card data from list page
-        await self._random_delay(600, 1800)
-        try:
-            eval_result = await evaluate_job(resume, job_card, settings)
-        except Exception as e:
-            await self._record_job_result(job_card, {
-                "score": 0, "decision": "review",
-                "status": "error",
-                "reasons": [f"AI评估异常: {e}"],
-                "risks": [], "initial_message": "",
-            }, batch_id)
-            self._stats["errors"] += 1
-            return f"[{idx+1}] 评估异常(error): {e}"
+        # Step 1: Score (skip AI if priority pre_eval provided)
+        if pre_eval:
+            eval_result = dict(pre_eval)
+        else:
+            await self._random_delay(600, 1800)
+            try:
+                eval_result = await evaluate_job(resume, job_card, settings)
+            except Exception as e:
+                await self._record_job_result(job_card, {
+                    "score": 0, "decision": "review",
+                    "status": "error",
+                    "reasons": [f"AI评估异常: {e}"],
+                    "risks": [], "initial_message": "",
+                }, batch_id)
+                self._stats["errors"] += 1
+                return f"[{idx+1}] 评估异常(error): {e}"
         score = int(eval_result.get("score") or 0)
 
         if eval_result.get("decision") == "skip" or score < min_score:
@@ -905,6 +948,15 @@ class AutomationEngine:
         try:
             detail_page, is_login = await self._safe_open_tab(bm, url, on_progress)
             if is_login:
+                await self._record_job_result(job_card, {
+                    "score": eval_result.get("score", 0),
+                    "decision": "review",
+                    "status": "error",
+                    "reasons": ["登录失效，无法打开详情页"],
+                    "risks": [],
+                    "initial_message": eval_result.get("initial_message", ""),
+                }, batch_id)
+                self._stats["errors"] += 1
                 return f"[{idx+1}] \u26a0\ufe0f 登录失效 | {title}"
             if not detail_page:
                 eval_result = _mark_evaluation_skipped(eval_result, "打开标签页失败")
@@ -948,11 +1000,18 @@ class AutomationEngine:
               return {found: true};
             })()""")
             if not btn2.get("found"):
-                eval_result = _mark_evaluation_skipped(eval_result, "未找到继续沟通按钮")
-                await self._record_job_result(job_card, eval_result, batch_id)
-                self._stats["skipped"] += 1
+                # Job was already contacted in a previous session
+                await self._record_job_result(job_card, {
+                    "score": eval_result.get("score", 0),
+                    "decision": eval_result.get("decision", "contact"),
+                    "status": "chat_started",
+                    "reasons": list(eval_result.get("reasons", [])),
+                    "risks": list(eval_result.get("risks", [])),
+                    "initial_message": eval_result.get("initial_message", ""),
+                }, batch_id)
+                self._stats["sent"] += 1
                 await bm.close_tab(detail_page)
-                return f"[{idx+1}] 无继续沟通 | {title}"
+                return f"[{idx+1}] 已沟通 | {title}"
 
             # Step 5: Wait for chat page (same tab, URL changes to /chat)
             await asyncio.sleep(3)
@@ -1147,12 +1206,26 @@ class AutomationEngine:
         return False
 
     async def _safe_open_tab(self, bm, url: str, on_progress=None):
-        """Open new tab, immediately check if it redirects to login."""
+        """Open new tab, check URL + page content for login redirect."""
         try:
             page = await bm.open_tab(url)
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
             page_url = await bm.evaluate_on(page, "location.href") or ""
-            if isinstance(page_url, str) and LOGIN_URL_PATTERNS.search(page_url):
+
+            url_suspect = isinstance(page_url, str) and (
+                LOGIN_URL_PATTERNS.search(page_url) or "/web/user/" in page_url
+            )
+            is_login = False
+            if url_suspect:
+                try:
+                    detect = await bm.evaluate_on(page, LOGIN_PAGE_DETECT_JS)
+                    if isinstance(detect, dict) and detect.get("hasLoginForm"):
+                        is_login = True
+                except Exception:
+                    if isinstance(page_url, str) and LOGIN_URL_PATTERNS.search(page_url):
+                        is_login = True
+
+            if is_login:
                 self._emit("risk", "检测到登录失效，页面跳转至登录页，停止自动化", on_progress)
                 self._running = False
                 self._status = "risk"
@@ -1203,6 +1276,8 @@ class AutomationEngine:
     def stop(self):
         was_running = self._running
         self._running = False
+        if self._run_done:
+            self._run_done.set()
         if self._login_watchdog_task and not self._login_watchdog_task.done():
             self._login_watchdog_task.cancel()
         if was_running and self._on_progress_cb:

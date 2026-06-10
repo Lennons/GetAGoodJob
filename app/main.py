@@ -182,26 +182,25 @@ def upsert_job(
     if batch_id:
         values["batch_id"] = batch_id
     if existing:
-        # If this job was previously skipped but now passes → create a new record
-        if existing.status == "skipped" and values.get("status") not in ("skipped",):
-            pass  # fall through to insert new record
-        elif existing.status in {"chat_started", "sent"} and values.get("status") == "evaluated":
-            # Already sent, don't downgrade status
+        # Already sent — don't downgrade status, just refresh metadata
+        if existing.status in {"chat_started", "sent"} and values.get("status") == "evaluated":
             values.pop("status", None)
             for key, value in values.items():
                 setattr(existing, key, value)
             db.commit()
             db.refresh(existing)
             return existing
-        else:
-            # Same status, update in place
-            for key, value in values.items():
-                setattr(existing, key, value)
-            if not batch_id and existing.batch_id:
-                pass
-            db.commit()
-            db.refresh(existing)
-            return existing
+        # Previously skipped but now passes — update in place (no duplicate)
+        if existing.status == "skipped" and values.get("status") not in ("skipped",):
+            pass  # fall through to generic update below
+        # Generic update in place
+        for key, value in values.items():
+            setattr(existing, key, value)
+        if not batch_id and existing.batch_id:
+            pass
+        db.commit()
+        db.refresh(existing)
+        return existing
 
     # Auto-assign sequence number for new jobs
     max_seq = db.scalar(select(func.max(Job.seq))) or 0
@@ -535,8 +534,10 @@ def create_reply_log(payload: dict[str, Any] = Body(...), db: Session = Depends(
     """记录一条自动回复。"""
     from app.models import AutoReplyLog
     log = AutoReplyLog(
+        contact_name=payload.get("contact_name", ""),
         company=payload.get("company", ""),
         title=payload.get("title", ""),
+        role=payload.get("role", ""),
         message=payload.get("message", ""),
         conversation_id=payload.get("conversation_id"),
         job_url=payload.get("job_url", ""),
@@ -548,6 +549,7 @@ def create_reply_log(payload: dict[str, Any] = Body(...), db: Session = Depends(
         "id": log.id,
         "company": log.company,
         "title": log.title,
+        "role": log.role,
         "message": log.message,
         "job_url": log.job_url,
         "created_at": dt(log.created_at),
@@ -568,6 +570,7 @@ def list_reply_logs(limit: int = 50, offset: int = 0, db: Session = Depends(get_
             "contact_name": log.contact_name,
             "company": log.company,
             "title": log.title,
+            "role": log.role,
             "message": log.message,
             "job_url": log.job_url,
             "created_at": dt(log.created_at),

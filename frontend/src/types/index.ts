@@ -82,6 +82,7 @@ export interface ReplyLog {
   contact_name: string;
   company: string;
   title: string;
+  role: string;
   message: string;
   job_url: string;
   created_at: string;

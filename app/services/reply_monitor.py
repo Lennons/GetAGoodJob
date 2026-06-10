@@ -230,6 +230,22 @@ EXTRACT_CONTACT_INFO_JS = """(() => {
   
   return result;
 })()"""
+
+ROLE_SUFFIXES = [
+    "猎头顾问", "招聘顾问", "招聘经理", "招聘主管", "招聘专员",
+    "人事经理", "人事主管", "人事专员", "招聘助理",
+    "HRBP", "HRM", "HRD", "HR", "招聘者",
+]
+
+def _extract_role(text: str):
+    """Extract recruiter role suffix from concatenated name string.
+    e.g., '杨女士思创力维招聘者' -> '招聘者'
+    Returns empty string if no known suffix found."""
+    for suffix in sorted(ROLE_SUFFIXES, key=len, reverse=True):
+        if text.endswith(suffix) and len(text) > len(suffix):
+            return suffix
+    return ""
+
 class ReplyMonitor:
 
     def __init__(self):
@@ -384,17 +400,25 @@ class ReplyMonitor:
         except Exception:
             return
 
-        # Extract company and job title from chat panel
+        # Extract contact name, company and job title from chat panel
+        contact_name = ""
         company = chat_name
         job_title = ""
+        role = ""
         try:
             info = await bm.evaluate_on(chat_page, EXTRACT_CONTACT_INFO_JS) or {}
+            if info.get("name"):
+                contact_name = info["name"]
             if info.get("company"):
                 company = info["company"]
             if info.get("title"):
                 job_title = info["title"]
         except Exception:
             pass
+        # Extract recruiter role from chat_name suffix
+        # (chat panel .name-box only has name/company/job-position,
+        #  the recruiter's role like '招聘者/HRBP' is only in the list item text)
+        role = _extract_role(chat_name)
 
         # Read messages
         messages = await bm.evaluate_on(chat_page, READ_MESSAGES_JS) or []
@@ -502,6 +526,7 @@ class ReplyMonitor:
                     "contact_name": contact_name,
                     "company": company,
                     "title": job_title,
+                    "role": role,
                     "message": text[:500],
                 }).encode()
                 await asyncio.to_thread(lambda: __import__("urllib.request").request.urlopen(

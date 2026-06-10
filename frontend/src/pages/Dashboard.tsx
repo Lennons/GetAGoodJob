@@ -23,6 +23,7 @@ export default function Dashboard() {
   const [counter, setCounter] = useState("0 / 0");
   const [barW, setBarW] = useState(0);
   const [taskStatus, setTaskStatus] = useState("就绪");
+
   const [sent, setSent] = useState(0);
   const [skipped, setSkipped] = useState(0);
   const [errors, setErrors] = useState(0);
@@ -100,6 +101,9 @@ export default function Dashboard() {
         setLastAction(d.status === "completed" ? "完成" : "已停止");
         loadJobs();
       }
+      if (isRunning) {
+        setTaskStatus("进行中");
+      }
       if (d.message) setProgressMsg(String(d.message));
       if (d.last_action) setLastAction(String(d.last_action));
       if (d.progress_pct != null) {
@@ -135,6 +139,7 @@ export default function Dashboard() {
         const d = await api.pollAutomation({ status: "online", running: false });
         if (d.running) {
           runningRef.current = true;
+          setTaskStatus("进行中");
           if (pollTimer.current) clearInterval(pollTimer.current);
           pollTimer.current = setInterval(pollAutomation, 1500);
         }
@@ -308,8 +313,7 @@ export default function Dashboard() {
               <select className="field-select" value={jobStatusFilter} onChange={e => { setJobStatusFilter(e.target.value); setJobPage(1); }}>
                 <option value="">全部状态</option>
                 <option value="evaluated">已评分</option>
-                <option value="sent">已发送</option>
-                <option value="chat_started">已沟通</option>
+                <option value="chat_started">已发送</option>
                 <option value="skipped">已跳过</option>
                 <option value="error">异常</option>
               </select>
@@ -413,7 +417,7 @@ export default function Dashboard() {
                       <td style={{ color: "var(--text-secondary)", fontSize: 12, textAlign: "center" }}>{replyLogsTotal - ((replyLogPage - 1) * replyLogPageSize + i)}</td>
                       <td style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>{ts}</td>
                       <td style={{ fontWeight: 600 }}>
-                        {[log.contact_name, log.company, log.title].filter(Boolean).join(" − ") || "−"}
+                        {[log.contact_name, log.company, log.role].filter(Boolean).join("-") || "−"}
                       </td>
                       <td style={{ fontSize: 12, color: "var(--text-secondary)", maxWidth: 350, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{log.message || "−"}</td>
                     </tr>
