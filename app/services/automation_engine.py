@@ -1108,14 +1108,8 @@ class AutomationEngine:
                 if isinstance(result, list) and len(result) > 0:
                     return result
                 if attempt < 2:
-                    # 空列表：先滚到接近底部再试，跳过已处理区域
-                    await bm.evaluate("""
-                        (() => {
-                            const h = document.scrollingElement || document.documentElement;
-                            h.scrollTop = Math.max(h.scrollTop, h.scrollHeight * 0.7);
-                        })()
-                    """)
-                    await asyncio.sleep(2)
+                    await bm.evaluate(SCROLL_JOB_LIST_JS)
+                    await asyncio.sleep(3)
             except Exception:
                 pass
         return []
