@@ -753,16 +753,35 @@ class AutomationEngine:
                     fresh_jobs.append(job_card)
 
                 if not fresh_jobs:
-                    empty_rounds += 1
-                    if empty_rounds > MAX_EMPTY_SCROLL_ROUNDS:
-                        break
-                    self._emit(
-                        "loading",
-                        f"继续向下加载岗位... ({empty_rounds}/{MAX_EMPTY_SCROLL_ROUNDS})",
-                        on_progress,
-                    )
+                    if not jobs:
+                        # 页面上真的一张卡片都没有
+                        empty_rounds += 1
+                        if empty_rounds > MAX_EMPTY_SCROLL_ROUNDS:
+                            break
+                        self._emit(
+                            "loading",
+                            f"继续向下加载岗位... ({empty_rounds}/{MAX_EMPTY_SCROLL_ROUNDS})",
+                            on_progress,
+                        )
                     await self._load_more_jobs(bm)
-                    continue
+                    # 加载完成，直接重新提取（不走下一轮 while）
+                    try:
+                        await asyncio.sleep(1)
+                        jobs = await self._extract_jobs(bm)
+                        fresh_jobs = []
+                        for job_card in [j for j in jobs if j.get("url")]:
+                            url = job_card["url"]
+                            source_key = job_card.get("source_key") or url.split("?")[0]
+                            if source_key in processed:
+                                continue
+                            processed.add(source_key)
+                            if already_sent and source_key in already_sent:
+                                continue
+                            fresh_jobs.append(job_card)
+                    except Exception:
+                        pass
+                    if not fresh_jobs:
+                        continue
 
                 empty_rounds = 0
                 self._emit(
