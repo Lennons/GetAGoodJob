@@ -164,6 +164,22 @@ def _mark_evaluation_skipped(evaluation: Optional[dict], reason: str) -> dict:
     return result
 
 
+EXTRACT_DETAIL_SALARY_JS = """
+(() => {
+  // 尝试从详情页提取可读薪资
+  const el = document.querySelector('.job-salary, .salary-text, [class*="salary"], .detail-salary');
+  if (!el) return '';
+  const text = (el.textContent || '').trim();
+  // 检查是否有 data-salary 属性
+  const ds = el.getAttribute('data-salary') || el.getAttribute('data-range');
+  if (ds) return ds;
+  // 检查 meta 标签
+  const meta = document.querySelector('meta[name="salary"], meta[property="og:salary"]');
+  if (meta) return meta.getAttribute('content') || '';
+  return text;
+})()
+"""
+
 EXTRACT_JOB_LIST_JS = """
 (() => {
   const visible = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
@@ -964,7 +980,7 @@ class AutomationEngine:
         else:
             await self._random_delay(600, 1800)
             try:
-                eval_result = await evaluate_job(resume, job_card, settings)
+                eval_result = await evaluate_job(resume, job_card, settings, self._boss_font_url)
             except Exception as e:
                 await self._record_job_result(job_card, {
                     "score": 0, "decision": "review",
@@ -1022,6 +1038,20 @@ class AutomationEngine:
                 self._stats["skipped"] += 1
                 await bm.close_tab(detail_page)
                 return f"[{idx+1}] 未进入详情页 | {title}"
+
+            # 详情页额外薪资提取（兜底 BOSS 字体混淆）
+            try:
+                detail_salary = await bm.evaluate_on(detail_page, EXTRACT_DETAIL_SALARY_JS)
+                if detail_salary and not eval_result.get("salary_display"):
+                    from app.services.deepseek import _normalize_salary, _decode_boss_salary
+                    ds = _normalize_salary(str(detail_salary))
+                    if not re.search(r'\d', ds) and self._boss_font_url:
+                        ds = _decode_boss_salary(str(detail_salary), self._boss_font_url)
+                    if ds and re.search(r'\d', ds):
+                        eval_result["salary_display"] = ds
+                        await self._record_job_result(job_card, eval_result, batch_id)
+            except Exception:
+                pass
 
             # Step 3: Click "立即沟通" (first click — opens dialog, button changes to "继续沟通")
             btn1 = await bm.evaluate_on(detail_page, """(() => {

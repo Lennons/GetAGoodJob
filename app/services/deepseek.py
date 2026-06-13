@@ -148,10 +148,48 @@ def _extract_job_salary_from_reason(reason: str) -> str:
         return f"{m.group(1)}K"
     return ""
 
-def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
+def _decode_boss_salary(raw: str, font_url: str) -> str:
+    """下载 BOSS 字体文件，解析 cmap 表，解码混淆薪资。返回如 '13K-26K·13薪' 或 ''"""
+    if not raw or not font_url:
+        return ""
+    try:
+        from fontTools.ttLib import TTFont
+        req = urllib.request.Request(font_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            font_data = resp.read()
+        font = TTFont(BytesIO(font_data))
+        cmap = font.getBestCmap()
+        if not cmap:
+            return ""
+        # cmap: {codepoint: glyph_name}
+        # BOSS: PUA codepoints map to glyph names like 'glyph1'..'glyph10'
+        # 按 codepoint 从小到大排序，依次对应数字 0-9
+        pua_pairs = sorted((cp, gn) for cp, gn in cmap.items() if 0xE000 <= cp <= 0xF8FF)
+        if not pua_pairs:
+            return ""
+        # 构建解码表：chr(PUA_codepoint) → digit_char
+        decode_map = {}
+        for idx, (cp, gn) in enumerate(pua_pairs):
+            decode_map[chr(cp)] = str(idx % 10)
+        # 解码
+        result = []
+        for ch in raw:
+            result.append(decode_map.get(ch, ch))
+        decoded = ''.join(result)
+        # 验证：解码后应包含数字
+        if re.search(r'\d', decoded):
+            return decoded
+        return ""
+    except Exception:
+        return ""
+
+
+def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict, font_url: str = "") -> dict:
     """Post-process: if job_max < exp_min * ratio, force skip."""
     salary_expectation = settings.get("salary_expectation", "") or ""
     if not salary_expectation:
+        # 即使无薪资期望也要尝试提取 salary_display
+        evaluation["salary_display"] = _normalize_salary(str(job.get("salary", ""))) or evaluation.get("job_salary", "")
         return evaluation
 
     ratio = float(settings.get("salary_intercept_ratio", 0.7))
@@ -166,8 +204,10 @@ def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
                 salary_score = _score_salary(job_salary, salary_expectation, ratio)
                 break
 
-    # 提取可读薪资用于前端展示
-    display_salary = _normalize_salary(str(job.get("salary", "")))
+    # 提取可读薪资用于前端展示（优先级：AI直接返回 > 解析salary > AI理由提取）
+    display_salary = evaluation.get("job_salary", "")
+    if not display_salary or not re.search(r'\d+', display_salary):
+        display_salary = _normalize_salary(str(job.get("salary", "")))
     if not display_salary or not re.search(r'\d+', display_salary):
         display_salary = job_salary if salary_score != 8 else ""
     if not display_salary:
@@ -175,6 +215,9 @@ def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
             if v := _extract_job_salary_from_reason(reason):
                 display_salary = v
                 break
+    # 最后尝试 BOSS 字体解码
+    if not display_salary and font_url:
+        display_salary = _decode_boss_salary(job_salary, font_url)
     evaluation["salary_display"] = display_salary
 
     if salary_score < 0:
@@ -234,7 +277,7 @@ def _score_experience(job_text: str, resume_years: int, extra_years=None) -> int
 
 
 
-def fallback_evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
+def fallback_evaluate_job(resume: dict, job: dict, settings: dict, font_url: str = "") -> dict:
     text = " ".join([
         str(job.get("title", "")),
         str(job.get("company", "")),
@@ -345,7 +388,7 @@ def fallback_evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
         "best_resume_angle": resume.get("summary", "")[:140],
         "score_detail": _score_detail,
         "initial_message": build_fallback_initial_message(resume, job) if decision == "chat" else "",
-    }, job, settings)
+    }, job, settings, font_url)
 
 
 def build_fallback_initial_message(resume: dict, job: dict) -> str:
@@ -356,7 +399,7 @@ def build_fallback_initial_message(resume: dict, job: dict) -> str:
     return f"您好，我对{title}很感兴趣，想进一步了解岗位职责和团队情况，方便的话期待沟通。"
 
 
-async def evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
+async def evaluate_job(resume: dict, job: dict, settings: dict, font_url: str = "") -> dict:
     client = DeepSeekClient(api_key=settings.get("api_key"), model=settings.get("model"))
     if not client.configured:
         return fallback_evaluate_job(resume, job, settings)
@@ -377,7 +420,7 @@ async def evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
             "role": "system",
             "content": (
                 "你是严谨的求职岗位匹配助手。只输出 JSON，不要 Markdown。"
-                "字段：score(0-100),decision(chat|skip|review),reasons数组,risks数组,"
+                "字段：score(0-100),decision(chat|skip|review),reasons数组,risks数组,job_salary(岗位薪资原文),"
                 "best_resume_angle,initial_message。"
                 "评分从 6 个维度综合考量：\n"
                 "1. 城市匹配(0-15) 2. 薪资匹配(0-15)\n"
@@ -398,7 +441,7 @@ async def evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ]
     result = await client.chat_json(messages, max_tokens=1200)
-    return _apply_salary_penalty(result, job, settings)
+    return _apply_salary_penalty(result, job, settings, font_url)
 
 
 async def evaluate_and_extract_keywords(resume: dict, job: dict, settings: dict) -> dict:
@@ -429,7 +472,7 @@ async def evaluate_and_extract_keywords(resume: dict, job: dict, settings: dict)
             "content": (
                 "你是一位严谨的求职岗位匹配兼 JD 分析助手。只输出 JSON，不要 Markdown。\n\n"
                 "返回字段：\n"
-                "score(0-100), decision(chat|skip|review), reasons 数组, risks 数组, "
+                "score(0-100), decision(chat|skip|review), reasons 数组, risks 数组, job_salary(岗位薪资原文), "
                 "best_resume_angle, initial_message,\n"
                 "keywords 数组（每个词含 word 和 category，category 为 skill|tool|knowledge 之一）。\n\n"
                 "===== 评分规则（每条理由须具体描述差异，禁止笼统标签）=====\n"
