@@ -87,10 +87,30 @@ async def analyze_resume(text: str, *, model: Optional[str] = None, api_key: Opt
 
 
 
+def _normalize_salary(raw: str) -> str:
+    """统一薪资单位：15k→15000, 7~12K→7000~12000, 15000~20000 保持不变."""
+    if not raw:
+        return ""
+    # 去掉 k/K 标记
+    cleaned = re.sub(r'[kK]', '', raw)
+    nums = [int(n) for n in re.findall(r'\d+', cleaned)]
+    if not nums:
+        return raw
+    has_k = bool(re.search(r'\d+\s*[kK]', raw))
+    # 有 k/K 标记且数字均 < 1000，视为千单位整体乘1000
+    if has_k and max(nums) < 1000:
+        return re.sub(r'(\d+)', lambda m: str(int(m.group(1)) * 1000), cleaned)
+    return cleaned
+
+
 def _score_salary(job_salary: str, expected: str, ratio: float = 0.7) -> int:
     """Score salary match — returns negative penalty when job_max < exp_min * ratio."""
     if not expected or not job_salary:
         return 8  # no data, neutral
+
+    # 统一单位（15k→15000、20000 保持不变）
+    expected = _normalize_salary(expected)
+    job_salary = _normalize_salary(job_salary)
 
     exp_nums = [int(n) for n in re.findall(r'\d+', expected)]
     job_nums = [int(n) for n in re.findall(r'\d+', job_salary)]
@@ -129,9 +149,9 @@ def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
     # 如果直接解析失败（得分 8 表示无数据），从 AI 评分理由里兜底提取薪资数字。
     if salary_score == 8:
         for reason in evaluation.get("reasons", []):
-            m = re.search(r'(?:薪资范围|岗位薪资|薪资)[^\d]*(\d+)[kK]?[-~](\d+)[kK]?', reason)
+            m = re.search(r'(?:薪资范围|岗位薪资|薪资)[^\d]*(\d+)\s*[kK]?\s*[-~]\s*(\d+)\s*[kK]?', reason)
             if m:
-                job_salary = f"{m.group(1)}-{m.group(2)}K"
+                job_salary = f"{m.group(1)}K-{m.group(2)}K"
                 salary_score = _score_salary(job_salary, salary_expectation, ratio)
                 break
 
