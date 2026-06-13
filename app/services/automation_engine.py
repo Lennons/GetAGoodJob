@@ -359,6 +359,28 @@ def _target_list_state_js(label: str, keyword: str) -> str:
 }})()
 """
 
+# ── 列表页侧边栏 JD 提取 ──────────────────────────────
+CLICK_CARD_BY_URL_JS = """(() => {
+  const sk = window.__bossBotSourceKey__;
+  const cards = Array.from(document.querySelectorAll('.job-card-box'));
+  for (const card of cards) {
+    const a = card.querySelector('a.job-name[href*="job_detail"], a[href*="/job_detail/"]');
+    if (!a) continue;
+    if ((a.href || '').split('?')[0] !== sk) continue;
+    card.click();
+    return 'clicked';
+  }
+  return '';
+})()"""
+
+READ_SIDE_PANEL_JD_JS = """(() => {
+  const panel = document.querySelector('.job-detail-container');
+  if (!panel || !panel.offsetParent) return '';
+  const descEl = panel.querySelector('.job-detail-body');
+  if (!descEl) return '';
+  return descEl.innerText.trim().slice(0, 8000);
+})()"""
+
 EXTRACT_JOB_DETAIL_JS = """
 (() => {
   const get = (sel) => { const el = document.querySelector(sel); return el ? el.textContent.trim() : ''; };
@@ -1027,6 +1049,20 @@ class AutomationEngine:
         job_card = job_card or {"url": url, "source_key": url.split("?")[0]}
         title = (job_card.get("title") or "?")[:60]
 
+        # Step 1a: Extract full JD from list page side panel
+        old_desc = job_card.get("description") or ""
+        if len(old_desc) < 150:
+            sk = job_card.get("source_key") or url.split("?")[0]
+            import json as _json2
+            sk_json = _json2.dumps(sk)
+            clicked = await bm.evaluate(f"window.__bossBotSourceKey__={sk_json};" + CLICK_CARD_BY_URL_JS)
+            if clicked == "clicked":
+                await asyncio.sleep(2)
+                full = await bm.evaluate(READ_SIDE_PANEL_JD_JS)
+                if full and isinstance(full, str) and len(full) > 50:
+                    job_card["description"] = full
+                    self._emit("detail", f"[{idx+1}] 列表页JD ({len(full)}字) | {title[:30]}", on_progress)
+
         # Step 1: Score (skip AI if priority pre_eval provided)
         if pre_eval:
             eval_result = dict(pre_eval)
@@ -1091,19 +1127,6 @@ class AutomationEngine:
                 self._stats["skipped"] += 1
                 await bm.close_tab(detail_page)
                 return f"[{idx+1}] 未进入详情页 | {title}"
-
-            # Extract full JD from detail page for AI message generation
-            try:
-                detail = await bm.evaluate_on(detail_page, EXTRACT_JOB_DETAIL_JS)
-                if detail and isinstance(detail, dict):
-                    full_desc = str(detail.get("description") or "")
-                    if len(full_desc) > 150:
-                        job_card["description"] = full_desc
-                        self._emit("detail", f"[{idx+1}] JD已采集 ({len(full_desc)}字) | {title[:30]}", on_progress)
-                        # Save updated description to DB
-                        await self._record_job_result(job_card, eval_result, batch_id)
-            except Exception as e:
-                self._emit("detail", f"[{idx+1}] JD提取跳过: {e} | {title[:30]}", on_progress)
 
             # Step 3: Click "立即沟通" (first click — opens dialog, button changes to "继续沟通")
             btn1 = await bm.evaluate_on(detail_page, """(() => {
