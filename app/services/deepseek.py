@@ -135,6 +135,19 @@ def _score_salary(job_salary: str, expected: str, ratio: float = 0.7) -> int:
     return 12
 
 
+def _extract_job_salary_from_reason(reason: str) -> str:
+    """从AI理由中提取岗位薪资数字，返回如 '13K-15K' 或 ''."""
+    m = re.search(r'岗位薪资[^\d]*(\d+)\s*[kK]?\s*[-~]\s*(\d+)\s*[kK]?', reason)
+    if m:
+        return f"{m.group(1)}K-{m.group(2)}K"
+    m = re.search(r'(?:薪资范围|薪资上限|岗位)\D*(\d+)\s*[kK]?\s*[-~]\s*(\d+)\s*[kK]?', reason)
+    if m:
+        return f"{m.group(1)}K-{m.group(2)}K"
+    m = re.search(r'(?:上限|最高|岗位)\D*(\d+)\s*[kK]', reason)
+    if m:
+        return f"{m.group(1)}K"
+    return ""
+
 def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
     """Post-process: if job_max < exp_min * ratio, force skip."""
     salary_expectation = settings.get("salary_expectation", "") or ""
@@ -149,23 +162,20 @@ def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
     # 如果直接解析失败（得分 8 表示无数据），从 AI 评分理由里兜底提取岗位薪资数字。
     if salary_score == 8:
         for reason in evaluation.get("reasons", []):
-            m = None
-            # 优先匹配"岗位薪资"区间
-            m = re.search(r'岗位薪资[^\d]*(\d+)\s*[kK]?\s*[-~]\s*(\d+)\s*[kK]?', reason)
-            # 其次"薪资范围/薪资上限"区间
-            if not m:
-                m = re.search(r'(?:薪资范围|薪资上限|岗位)\D*(\d+)\s*[kK]?\s*[-~]\s*(\d+)\s*[kK]?', reason)
-            # 单值"薪资上限16K"或"上限XK"
-            if not m:
-                m = re.search(r'(?:上限|最高|岗位)\D*(\d+)\s*[kK]', reason)
-                if m:
-                    job_salary = f"{m.group(1)}K"
-                    salary_score = _score_salary(job_salary, salary_expectation, ratio)
-                    break
-            if m:
-                job_salary = f"{m.group(1)}K-{m.group(2)}K"
+            if job_salary := _extract_job_salary_from_reason(reason):
                 salary_score = _score_salary(job_salary, salary_expectation, ratio)
                 break
+
+    # 提取可读薪资用于前端展示
+    display_salary = _normalize_salary(str(job.get("salary", "")))
+    if not display_salary or not re.search(r'\d+', display_salary):
+        display_salary = job_salary if salary_score != 8 else ""
+    if not display_salary:
+        for reason in evaluation.get("reasons", []):
+            if v := _extract_job_salary_from_reason(reason):
+                display_salary = v
+                break
+    evaluation["salary_display"] = display_salary
 
     if salary_score < 0:
         evaluation["score"] = 0

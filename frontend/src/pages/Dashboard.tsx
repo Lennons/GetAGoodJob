@@ -334,6 +334,7 @@ export default function Dashboard() {
                   <th style={{ width: 44, textAlign: "center", fontWeight: 700 }}>分</th>
                   <th style={{ width: 80 }}>状态</th>
                   <th>岗位</th>
+                  <th style={{ width: 90 }}>岗位工资</th>
                   <th style={{ width: 130 }}>公司</th>
                   <th style={{ width: 100 }}>采集时间</th>
                   <th>备注</th>
@@ -341,7 +342,7 @@ export default function Dashboard() {
               </thead>
               <tbody>
                 {jobs.length === 0 && (
-                  <tr><td colSpan={7} style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>暂无岗位数据</td></tr>
+                  <tr><td colSpan={8} style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>暂无岗位数据</td></tr>
                 )}
                 {jobs.map((j, i) => {
                   const seq = j.seq ?? (jobTotal - ((jobPage - 1) * jobPageSize + i));
@@ -365,6 +366,7 @@ export default function Dashboard() {
                           : <span style={{ fontWeight: 600 }}>{(j.title || "岗位").slice(0, 40)}</span>
                         }
                       </td>
+                      <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>{j.salary_display || j.salary || "−"}</td>
                       <td>{j.company || "−"}</td>
                       <td style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>{ts}</td>
                       <td style={{ fontSize: 12, color: "var(--text-secondary)", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

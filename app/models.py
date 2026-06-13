@@ -42,6 +42,7 @@ class Job(Base):
     title: Mapped[str] = mapped_column(String(255), default="")
     company: Mapped[str] = mapped_column(String(255), default="")
     salary: Mapped[str] = mapped_column(String(255), default="")
+    salary_display: Mapped[str] = mapped_column(String(255), default="")
     city: Mapped[str] = mapped_column(String(255), default="")
     description: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT, "mysql"), nullable=True)
     raw: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)

@@ -115,6 +115,7 @@ def upsert_job(
         "title": compact_text(job_payload.get("title"), 255),
         "company": compact_text(job_payload.get("company"), 255),
         "salary": compact_text(job_payload.get("salary"), 255),
+        "salary_display": compact_text(evaluation.get("salary_display") or job_payload.get("salary_display", ""), 255),
         "city": compact_text(job_payload.get("city"), 255),
         "description": compact_text(job_payload.get("description"), 30000),
         "raw": job_payload.get("raw") or job_payload,

@@ -25,6 +25,7 @@ export interface Job {
   title: string;
   company: string;
   salary: string;
+  salary_display?: string;
   city: string;
   description: string;
   raw: Record<string, unknown>;
