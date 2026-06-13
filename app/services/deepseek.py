@@ -141,41 +141,19 @@ def _score_salary(job_salary: str, expected: str, ratio: float = 0.7) -> int:
 
 
 
-def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict, font_url: str = "") -> dict:
-    """Post-process: if job_max < exp_min * ratio, force skip."""
+def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
+    """Post-process: if job_max < exp_min * ratio, force skip.
+    薪资已在 _extract_jobs 阶段通过 BOSS 字体解码为可读格式，此处直接使用。
+    """
+    job_salary = str(job.get("salary", ""))
+    evaluation["salary_display"] = _normalize_salary(job_salary)
+
     salary_expectation = settings.get("salary_expectation", "") or ""
     if not salary_expectation:
-        # 即使无薪资期望也要尝试提取 salary_display
-        evaluation["salary_display"] = _normalize_salary(str(job.get("salary", ""))) or evaluation.get("job_salary", "")
         return evaluation
 
     ratio = float(settings.get("salary_intercept_ratio", 0.7))
-    job_salary = str(job.get("salary", ""))
     salary_score = _score_salary(job_salary, salary_expectation, ratio)
-
-    # BOSS 字体混淆：salary 字段里的数字被替换成私有区 Unicode，\d+ 匹配不到。
-    # 如果直接解析失败（得分 8 表示无数据），从 AI 评分理由里兜底提取岗位薪资数字。
-    if salary_score == 8:
-        for reason in evaluation.get("reasons", []):
-            if job_salary := _extract_job_salary_from_reason(reason):
-                salary_score = _score_salary(job_salary, salary_expectation, ratio)
-                break
-
-    # 提取可读薪资用于前端展示（优先级：AI直接返回 > 解析salary > AI理由提取）
-    display_salary = evaluation.get("job_salary", "")
-    if not display_salary or not re.search(r'\d+', display_salary):
-        display_salary = _normalize_salary(str(job.get("salary", "")))
-    if not display_salary or not re.search(r'\d+', display_salary):
-        display_salary = job_salary if salary_score != 8 else ""
-    if not display_salary:
-        for reason in evaluation.get("reasons", []):
-            if v := _extract_job_salary_from_reason(reason):
-                display_salary = v
-                break
-    # 最后尝试 BOSS 字体解码
-    if not display_salary and font_url:
-        display_salary = _decode_boss_salary(job_salary, font_url)
-    evaluation["salary_display"] = display_salary
 
     if salary_score < 0:
         evaluation["score"] = 0

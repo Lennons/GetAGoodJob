@@ -98,6 +98,7 @@ def job_to_dict(job: Job) -> dict[str, Any]:
         "title": job.title,
         "company": job.company,
         "salary": job.salary,
+        "salary_display": job.salary_display,
         "city": job.city,
         "description": job.description,
         "raw": job.raw,
