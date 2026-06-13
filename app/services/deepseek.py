@@ -449,7 +449,7 @@ async def evaluate_and_extract_keywords(resume: dict, job: dict, settings: dict)
                 "返回字段：\n"
                 "score(0-100), decision(chat|skip|review), reasons 数组, risks 数组, "
                 "best_resume_angle, initial_message,\n"
-                "keywords 数组（每个词含 word 和 category，category 为 skill|tool|knowledge 之一）。\n\n"
+                "keywords 数组（每个词含 word 和 category，category 为 skill|tool|knowledge|domain|capability 之一，也可以自创其他有价值类别）。\n\n"
                 "===== 评分规则（每条理由须具体描述差异，禁止笼统标签）=====\n"
                 "从 6 个维度综合考量，每个维度生成1-2条精准且描述性的理由：\n"
                 "1. 城市匹配(0-15) 2. 薪资匹配(0-15)\n"
@@ -528,15 +528,17 @@ async def extract_job_keywords(job_text: str, settings: dict) -> list[dict]:
         {
             "role": "system",
             "content": (
-                "你是一个JD技能分析助手。只输出JSON，不要Markdown。\n"
-                "从岗位描述中提取以下三类关键词：\n"
-                "1. skill: 专业技能（如 产品设计、需求分析、数据分析、用户调研）\n"
+                "你是一个JD分析助手。只输出JSON，不要Markdown。\n"
+                "从岗位描述中提取对职业发展有指导意义的关键词，类别不限：\n"
+                "1. skill: 专业技能（如 产品设计、需求分析、用户调研）\n"
                 "2. tool: 工具/平台/框架（如 Python、SQL、Figma、Jira、Axure）\n"
                 "3. knowledge: 领域知识（如 电商、SaaS、用户增长、AIGC）\n"
-                "每个词都应该是2-6个字的中文或英文缩写，去重。\n"
-                "输出格式：{\"keywords\": [{\"word\": \"需求分析\", \"category\": \"skill\"}, ...]}\n"
-                "只提取有意义的技术/工具/知识词，不要提取公司名、地名、福利、学历要求等通用词。\n"
-                "限制最多输出20个词。"
+                "4. domain: 行业/赛道（如 汽车、出海、新能源、金融科技、智能制造）\n"
+                "5. capability: 综合能力（如 0到1、从0到1、团队管理、跨部门协作、战略规划）\n"
+                "也可以根据JD内容自创其他有价值的类别。\n"
+                "每个词2-6个字，去重。输出格式：{\"keywords\": [{\"word\": \"从0到1\", \"category\": \"capability\"}, ...]}\n"
+                "不要提取公司名、地名、福利、学历要求等通用词。\n"
+                "限制最多输出25个词。"
             ),
         },
         {"role": "user", "content": compact_text(text, 3000)},
@@ -555,6 +557,8 @@ def _fallback_extract_keywords(text: str) -> list[dict]:
         r"(Python|SQL|Java|JavaScript|TypeScript|Go|Rust|React|Vue|Node|Docker|Kubernetes|Git|Figma|Sketch|Axure|Jira|Confluence|Notion|Excel|PPT|Word)",
         r"(人工智能|机器学习|深度学习|大模型|LLM|AIGC|RAG|Agent|自动化|数字孪生)",
         r"(SaaS|PaaS|IaaS|B端|C端|中台|电商|社交|短视频|直播|游戏|金融|教育|医疗|汽车|云计算|大数据|物联网)",
+        r"(新能源|智能制造|出海|智慧城市|数字政务|Web3|区块链|元宇宙|企业服务|出海工具|跨境电商|产业互联网)",
+        r"(从0到1|0到1|团队管理|跨部门|战略规划|商业思维|闭环|owner|自驱|落地|统筹|拉通|协调|执行力)",
     ]
     keywords = []
     for marker in ["任职要求", "岗位要求", "职位要求"]:
@@ -568,6 +572,10 @@ def _fallback_extract_keywords(text: str) -> list[dict]:
                 cat = "skill"
                 if any(c in m.lower() for c in ["python", "sql", "java", "figma", "jira", "git", "excel", "ppt"]):
                     cat = "tool"
+                elif any(c in m for c in ["新能源", "智能制造", "出海", "跨境电商", "智慧城市", "web3", "区块链", "企业服务"]):
+                    cat = "domain"
+                elif any(c in m for c in ["从0到1", "0到1", "团队管理", "跨部门", "战略", "闭环", "owner", "自驱", "落地", "统筹", "拉通"]):
+                    cat = "capability"
                 elif any(c in m for c in ["saas", "b端", "c端", "电商", "金融", "教育", "医疗"]):
                     cat = "knowledge"
                 keywords.append({"word": m, "category": cat})
@@ -587,6 +595,7 @@ async def generate_reply(resume: dict, job: Optional[dict], messages_in: list[di
         "resume_analysis": resume,
         "job": job or {},
         "conversation": messages_in[-12:],
+        "job_score": job_score,
         "rules": {
             "do_not_fabricate": True,
             "do_not_share_contact_info_unless_allowed": not settings.get("allow_contact_info_in_messages", False),
@@ -601,8 +610,8 @@ async def generate_reply(resume: dict, job: Optional[dict], messages_in: list[di
                 "你是求职沟通助手，帮助候选人与招聘方进行自然、有针对性的一对一沟通。只输出 JSON，不要 Markdown。\n\n"
                 "字段：action(reply|wait|decline|send_resume|rebuttal), message, need_human, reason。\n\n"
                 "=== 意图判断（由你全权决定 action） ===\n"
-                "1. 对方明确索要简历/作品/附件（如「发一份简历」「发下简历」）→ action=send_resume\n"
-                "2. 对方明确拒绝（「不合适」「不考虑」等）→ action=rebuttal 挽回\n"
+                "1. 对方明确索要简历/作品/附件（如「发一份简历」「发下简历」）→ action=send_resume，message 为发简历时的附言，最后加一句「方便的话可以安排面试进一步沟通」\n"
+                "2. 对方明确拒绝（「不合适」「不考虑」等）且 job_score >= 80 → action=rebuttal 挽回；若 job_score < 80 → action=wait\n"
                 "3. 对方说「审核后联系你」「会把简历推荐给部门」「HR后续联系」等自己处理简历的话 → action=reply，简短感谢\n"
                 "4. 对方问与岗位/JD 相关的问题（如技术栈、项目经验、对职位的理解等）→ action=reply，结合完整 JD + 简历 + 对话上下文回答\n"
                 "5. 对方介绍薪资/工时/福利/公司背景/项目等 → action=reply，结合自己对行业和岗位的认知来回应\n"
