@@ -146,10 +146,22 @@ def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
     salary_score = _score_salary(job_salary, salary_expectation, ratio)
 
     # BOSS 字体混淆：salary 字段里的数字被替换成私有区 Unicode，\d+ 匹配不到。
-    # 如果直接解析失败（得分 8 表示无数据），从 AI 评分理由里兜底提取薪资数字。
+    # 如果直接解析失败（得分 8 表示无数据），从 AI 评分理由里兜底提取岗位薪资数字。
     if salary_score == 8:
         for reason in evaluation.get("reasons", []):
-            m = re.search(r'(?:薪资范围|岗位薪资|薪资)[^\d]*(\d+)\s*[kK]?\s*[-~]\s*(\d+)\s*[kK]?', reason)
+            m = None
+            # 优先匹配"岗位薪资"区间
+            m = re.search(r'岗位薪资[^\d]*(\d+)\s*[kK]?\s*[-~]\s*(\d+)\s*[kK]?', reason)
+            # 其次"薪资范围/薪资上限"区间
+            if not m:
+                m = re.search(r'(?:薪资范围|薪资上限|岗位)\D*(\d+)\s*[kK]?\s*[-~]\s*(\d+)\s*[kK]?', reason)
+            # 单值"薪资上限16K"或"上限XK"
+            if not m:
+                m = re.search(r'(?:上限|最高|岗位)\D*(\d+)\s*[kK]', reason)
+                if m:
+                    job_salary = f"{m.group(1)}K"
+                    salary_score = _score_salary(job_salary, salary_expectation, ratio)
+                    break
             if m:
                 job_salary = f"{m.group(1)}K-{m.group(2)}K"
                 salary_score = _score_salary(job_salary, salary_expectation, ratio)
