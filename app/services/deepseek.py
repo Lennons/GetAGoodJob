@@ -116,10 +116,24 @@ def _score_salary(job_salary: str, expected: str) -> int:
 
 
 def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
-    """Post-process: if salary gap >= 30% of expected, force skip with score 0."""
+    """Post-process: if job min salary < 70% of expected min, force skip."""
     salary_expectation = settings.get("salary_expectation", "") or ""
+    if not salary_expectation:
+        return evaluation
+
     job_salary = str(job.get("salary", ""))
     salary_score = _score_salary(job_salary, salary_expectation)
+
+    # BOSS 字体混淆：salary 字段里的数字被替换成私有区 Unicode，\d+ 匹配不到。
+    # 如果直接解析失败（得分 8 表示无数据），从 AI 评分理由里兜底提取薪资数字。
+    if salary_score == 8:
+        for reason in evaluation.get("reasons", []):
+            m = re.search(r'(?:薪资范围|岗位薪资|薪资)[^\d]*(\d+)[kK]?[-~](\d+)[kK]?', reason)
+            if m:
+                job_salary = f"{m.group(1)}-{m.group(2)}K"
+                salary_score = _score_salary(job_salary, salary_expectation)
+                break
+
     if salary_score < 0:
         evaluation["score"] = 0
         evaluation["decision"] = "skip"
@@ -279,7 +293,7 @@ def fallback_evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
         "role": role_score, "industry": industry_score, "experience": experience_score,
     }
 
-    return {
+    return _apply_salary_penalty({
         "score": score,
         "decision": decision,
         "reasons": reasons,
@@ -287,7 +301,7 @@ def fallback_evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
         "best_resume_angle": resume.get("summary", "")[:140],
         "score_detail": _score_detail,
         "initial_message": build_fallback_initial_message(resume, job) if decision == "chat" else "",
-    }
+    }, job, settings)
 
 
 def build_fallback_initial_message(resume: dict, job: dict) -> str:
