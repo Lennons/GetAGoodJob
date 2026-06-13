@@ -87,15 +87,8 @@ export default function SettingsPage() {
               </Field>
               <Field label="每日沟通上限"><input className="field-input" type="number" min={1} max={500} value={s.daily_chat_limit} onChange={e => update("daily_chat_limit", Number(e.target.value))} /></Field>
               <Field label="期望薪资"><input className="field-input" placeholder="例：15k-25k 或 15000-25000" value={(s.salary_expectation as string) || ''} onChange={e => setS(prev => ({ ...prev, salary_expectation: e.target.value }))} /></Field>
-              <Field label="薪资拦截系数">
-                <div style={{display:'flex', flexDirection:'column', gap:4}}>
-                  <input className="field-input" type="number" min={0.1} max={2.0} step={0.05} value={(s.salary_intercept_ratio as number) ?? 0.7} onChange={e => setS(prev => ({ ...prev, salary_intercept_ratio: parseFloat(e.target.value) || 0.7 } as any))} />
-                  <span style={{fontSize:11, color:'var(--color-text-muted)', lineHeight:1.4}}>
-                    规则：岗位最高薪资 &lt; 期望最低薪资 × 系数 → 直接跳过。<br/>
-                    例：期望 20000~30000，系数 0.7，则岗位最高 &lt; 14000 被拦截。<br/>
-                    设 1.0 = 低于期望最低即拦截；设 0.5 = 低于期望一半才拦截。
-                  </span>
-                </div>
+              <Field label="薪资拦截系数" tip={"规则：岗位最高薪资 < 期望最低薪资 × 系数 → 直接跳过。\n例：期望 20000~30000，系数 0.7，则岗位最高 < 14000 被拦截。\n设 1.0 = 低于期望最低即拦截；设 0.5 = 低于期望一半才拦截。"}>
+                <input className="field-input" type="number" min={0.1} max={2.0} step={0.05} value={(s.salary_intercept_ratio as number) ?? 0.7} onChange={e => setS(prev => ({ ...prev, salary_intercept_ratio: parseFloat(e.target.value) || 0.7 } as any))} />
               </Field>
               <Field label="最低开聊分数线"><input className="field-input" type="number" min={0} max={100} value={s.min_score_to_chat} onChange={e => update("min_score_to_chat", Number(e.target.value))} /></Field>
               <Field label="最短发送间隔 (ms)"><input className="field-input" type="number" min={3000} step={1000} value={s.cooldown_min_ms} onChange={e => update("cooldown_min_ms", Number(e.target.value))} /></Field>
@@ -177,9 +170,8 @@ export default function SettingsPage() {
     </section>
   );
 }
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <div className="field"><span className="field-label">{label}</span>{children}</div>;
+function Field({ label, tip, children }: { label: string; tip?: string; children: React.ReactNode }) {
+  return <div className="field"><span className="field-label">{label}{tip && <span className="field-tip" data-tip={tip}>?</span>}</span>{children}</div>;
 }
 
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {

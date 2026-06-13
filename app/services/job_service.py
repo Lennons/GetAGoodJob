@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.models import Event, Job, Resume, Setting
 from app.services.settings import get_app_settings
 from app.services.text import compact_text, normalize_source_key
+from app.services.deepseek import _salary_to_display_k
 
 
 def dt(value: Optional[datetime]) -> Optional[str]:
@@ -44,6 +45,7 @@ def job_to_dict(job: Job) -> dict[str, Any]:
         "title": job.title,
         "company": job.company,
         "salary": job.salary,
+        "salary_display": _salary_to_display_k(job.salary_display or job.salary or ""),
         "city": job.city,
         "description": job.description,
         "raw": job.raw,

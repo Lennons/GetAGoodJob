@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import re
+import urllib.request
 import time as time_module
 from typing import Any, Optional
 
@@ -558,6 +560,7 @@ class AutomationEngine:
         self._login_watchdog_task = None
         self._mode = "expected"
         self._run_done = None  # lazily created in run()
+        self._boss_decode_map = None
 
     @property
     def running(self) -> bool: return self._running
@@ -577,8 +580,9 @@ class AutomationEngine:
         self._on_progress_cb = on_progress
         self._mode = mode
         self._stats = {"sent": 0, "skipped": 0, "errors": 0, "total": 0}
-        self._chat_count = 0
         self._consecutive = 0
+        # Initialize _chat_count from DB to avoid exceeding daily quota across runs
+        self._chat_count = self._get_today_chat_count()
 
         # Compute job tab from settings
         keyword = settings.get("target_job_keyword", "产品经理")
@@ -934,6 +938,27 @@ class AutomationEngine:
                            f"已停止 — 发送 {self._stats['sent']}，跳过 {self._stats['skipped']}，错误 {self._stats['errors']}",
                            self._on_progress_cb)
 
+    @staticmethod
+    def _get_today_chat_count() -> int:
+        """从 events DB 获取今日已发送聊天数，确保跨多次运行不超限额。"""
+        try:
+            from datetime import date, datetime, time
+            from app.database import SessionLocal
+            from sqlalchemy import func, select
+            from app.models import Event
+            with SessionLocal() as db:
+                start = datetime.combine(date.today(), time.min)
+                return (
+                    db.scalar(
+                        select(func.count(Event.id)).where(
+                            Event.type == "chat_started", Event.created_at >= start
+                        )
+                    )
+                    or 0
+                )
+        except Exception:
+            return 0
+
     async def _record_job_result(self, job_info: dict, evaluation: dict, batch_id: str = "") -> bool:
         try:
             import json as _json, urllib.request as _req
@@ -1183,34 +1208,13 @@ class AutomationEngine:
                     j["salary"] = decoded
         return jobs
 
-    # 已知的 BOSS 字体 URL（作为运行时 CSS 提取失败时的兜底）
-    _KNOWN_BOSS_FONT_URL = "https://img.bosszhipin.com/static/file/2023/30k9dfumyv1693967587404.ttf"
+    _BOSS_PUA_MAP = {chr(0xE030 + i): str((i - 1) % 10) for i in range(1, 11)}  # U+E031→0 … U+E03A→9
 
     def _ensure_boss_font_decoder(self, font_url: str):
-        """下载 BOSS 字体文件并缓存 PUA→数字 解码表"""
+        """使用硬编码 BOSS PUA 解码表；font_url 参数保留用于兼容，实际不使用。"""
         if self._boss_decode_map is not None:
             return
-        url = font_url or self._KNOWN_BOSS_FONT_URL
-        try:
-            from fontTools.ttLib import TTFont
-            from io import BytesIO
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                font_data = resp.read()
-            font = TTFont(BytesIO(font_data))
-            cmap = font.getBestCmap()
-            if not cmap:
-                self._boss_decode_map = {}
-                return
-            pua_pairs = sorted((cp, gn) for cp, gn in cmap.items() if 0xE000 <= cp <= 0xF8FF)
-            decode_map = {}
-            for idx, (cp, gn) in enumerate(pua_pairs):
-                decode_map[chr(cp)] = str(idx % 10)
-            self._boss_decode_map = decode_map
-            logging.getLogger(__name__).info(f"BOSS字体解码表已加载: {len(decode_map)} 个PUA字符, URL={font_url}")
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"BOSS字体解码失败: {e}")
-            self._boss_decode_map = {}
+        self._boss_decode_map = dict(self._BOSS_PUA_MAP)
 
     async def _load_more_jobs(self, bm) -> None:
         """滚动岗位列表并等待新卡片加载，最多尝试 5 次。"""

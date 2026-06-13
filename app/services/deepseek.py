@@ -107,6 +107,30 @@ def _normalize_salary(raw: str) -> str:
         cleaned = re.sub(r'(\d+)', lambda m: str(int(m.group(1)) * 1000), cleaned)
     return cleaned + suffix
 
+def _salary_to_display_k(raw: str) -> str:
+    """Convert salary to k display format: 20000 -> 20k, 10000-11000 -> 10k-11k"""
+    if not raw:
+        return ""
+    # First normalize to numeric form
+    normalized = _normalize_salary(raw)
+    # Extract suffix (like \u00b713\u85aa)
+    suffix = ""
+    m_sep = re.match(r'^(.*?)([\u00b7/]\s*.*)$', normalized)
+    if m_sep:
+        normalized = m_sep.group(1)
+        suffix = m_sep.group(2)
+    nums = [int(n) for n in re.findall(r'\d+', normalized)]
+    if not nums:
+        return "" if any(0xE000 <= ord(ch) <= 0xF8FF for ch in raw) else raw
+    # If numbers are >= 1000, convert to k format
+    if max(nums) >= 1000:
+        k_nums = [str(n // 1000) + 'k' for n in nums]
+        if len(k_nums) == 2:
+            return f"{k_nums[0]}-{k_nums[1]}{suffix}"
+        return f"{k_nums[0]}{suffix}"
+    return normalized + suffix
+
+
 
 def _score_salary(job_salary: str, expected: str, ratio: float = 0.7) -> int:
     """Score salary match — returns negative penalty when job_max < exp_min * ratio."""
@@ -146,20 +170,28 @@ def _apply_salary_penalty(evaluation: dict, job: dict, settings: dict) -> dict:
     薪资已在 _extract_jobs 阶段通过 BOSS 字体解码为可读格式，此处直接使用。
     """
     job_salary = str(job.get("salary", ""))
-    evaluation["salary_display"] = _normalize_salary(job_salary)
+    # Decode BOSS font PUA chars to readable numbers
+    decoded_salary = _normalize_salary(job_salary)
+    evaluation["salary_display"] = _salary_to_display_k(decoded_salary)
+    # Patch job salary in place so AI prompt gets decoded numbers
+    job["salary"] = decoded_salary
 
     salary_expectation = settings.get("salary_expectation", "") or ""
     if not salary_expectation:
         return evaluation
 
+    # If salary still has PUA chars (font decoder failed), skip scoring
+    if any(0xE000 <= ord(ch) <= 0xF8FF for ch in decoded_salary):
+        return evaluation
+
     ratio = float(settings.get("salary_intercept_ratio", 0.7))
-    salary_score = _score_salary(job_salary, salary_expectation, ratio)
+    salary_score = _score_salary(decoded_salary, salary_expectation, ratio)
 
     if salary_score < 0:
         evaluation["score"] = 0
         evaluation["decision"] = "skip"
         reasons = list(evaluation.get("reasons", []))
-        reasons.append(f"薪资硬拦截：岗位{job_salary}，期望{salary_expectation}×{ratio}，差距过大直接跳过")
+        reasons.append(f"薪资硬拦截：岗位{decoded_salary}，期望{salary_expectation}×{ratio}，差距过大直接跳过")
         evaluation["reasons"] = reasons
     return evaluation
 
@@ -375,6 +407,10 @@ async def evaluate_job(resume: dict, job: dict, settings: dict) -> dict:
         },
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ]
+    # Decode salary before AI call to prevent hallucination from BOSS font PUA chars
+    job["salary"] = _normalize_salary(str(job.get("salary", "")))
+    if any(0xE000 <= ord(ch) <= 0xF8FF for ch in job["salary"]):
+        job["salary"] = ""
     result = await client.chat_json(messages, max_tokens=1200)
     return _apply_salary_penalty(result, job, settings)
 
@@ -439,6 +475,10 @@ async def evaluate_and_extract_keywords(resume: dict, job: dict, settings: dict)
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ]
     try:
+        # Decode salary before AI call
+        job["salary"] = _normalize_salary(str(job.get("salary", "")))
+        if any(0xE000 <= ord(ch) <= 0xF8FF for ch in job["salary"]):
+            job["salary"] = ""
         result = await client.chat_json(messages, max_tokens=2400)
         evaluation = {
             "score": result.get("score", 0),

@@ -33,6 +33,7 @@ from app.services.browser_manager import BrowserManager, ensure_browser, get_bro
 from app.services.reply_monitor import get_reply_monitor
 
 from app.services.deepseek import (
+    _salary_to_display_k,
     analyze_resume,
     evaluate_job,
     generate_initial_message,
@@ -98,7 +99,7 @@ def job_to_dict(job: Job) -> dict[str, Any]:
         "title": job.title,
         "company": job.company,
         "salary": job.salary,
-        "salary_display": job.salary_display,
+        "salary_display": _salary_to_display_k(job.salary_display or job.salary or ""),
         "city": job.city,
         "description": job.description,
         "raw": job.raw,
