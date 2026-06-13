@@ -184,7 +184,31 @@ EXTRACT_JOB_LIST_JS = """
     const company = clean(card.querySelector('.boss-name, .company-name, [class*="company-name"], [class*="brand"]')?.textContent);
     const city = clean(card.querySelector('.company-location, [class*="location"], [class*="area"]')?.textContent);
     const tags = Array.from(card.querySelectorAll('.tag-list li')).map((li) => clean(li.textContent)).filter(Boolean);
-    const text = clean(card.innerText);
+    // Description: find the dedicated description element (NOT whole card.innerText)
+    // Try known BOSS description selectors first, then fall back to longest child text block
+    let desc = '';
+    const descSels = [
+      '.job-card-body .job-info', '.job-desc', '[class*="job-desc"]',
+      '[class*="card-info"]', '[class*="desc-text"]', '[class*="description"]',
+    ];
+    for (const sel of descSels) {
+      const el = card.querySelector(sel);
+      if (el && el.innerText && clean(el.innerText).length > 30) {
+        desc = clean(el.innerText);
+        break;
+      }
+    }
+    // Fallback: find the text-heaviest child element (not title/salary/company area)
+    if (!desc) {
+      const children = Array.from(card.querySelectorAll('div, p, section, span'))
+        .filter(c => visible(c) && clean(c.innerText).length > 30 && clean(c.innerText).length < 5000);
+      children.sort((a, b) => clean(b.innerText).length - clean(a.innerText).length);
+      if (children.length > 0) {
+        desc = clean(children[0].innerText);
+      }
+    }
+    // Last resort: whole card text
+    if (!desc) desc = clean(card.innerText);
     jobs.push({
       source_key: href.split('?')[0],
       url: href,
@@ -192,8 +216,8 @@ EXTRACT_JOB_LIST_JS = """
       salary,
       company,
       city,
-      description: text,
-      raw: { card_text: text, tags }
+      description: desc,
+      raw: { card_text: desc, tags, salary_raw: salary }
     });
   }
   // 提取 BOSS 薪资字体 URL
@@ -1068,6 +1092,19 @@ class AutomationEngine:
                 await bm.close_tab(detail_page)
                 return f"[{idx+1}] 未进入详情页 | {title}"
 
+            # Extract full JD from detail page for AI message generation
+            try:
+                detail = await bm.evaluate_on(detail_page, EXTRACT_JOB_DETAIL_JS)
+                if detail and isinstance(detail, dict):
+                    full_desc = str(detail.get("description") or "")
+                    if len(full_desc) > 150:
+                        job_card["description"] = full_desc
+                        self._emit("detail", f"[{idx+1}] JD已采集 ({len(full_desc)}字) | {title[:30]}", on_progress)
+                        # Save updated description to DB
+                        await self._record_job_result(job_card, eval_result, batch_id)
+            except Exception as e:
+                self._emit("detail", f"[{idx+1}] JD提取跳过: {e} | {title[:30]}", on_progress)
+
             # Step 3: Click "立即沟通" (first click — opens dialog, button changes to "继续沟通")
             btn1 = await bm.evaluate_on(detail_page, """(() => {
               const b = document.querySelector('a.btn-startchat');
@@ -1206,6 +1243,12 @@ class AutomationEngine:
                 decoded = ''.join(self._boss_decode_map.get(ch, ch) for ch in str(raw_salary))
                 if decoded != raw_salary:
                     j["salary"] = decoded
+                # Also decode PUA characters in description text
+                raw_desc = j.get("description", "")
+                if raw_desc and any(0xE000 <= ord(ch) <= 0xF8FF for ch in str(raw_desc)):
+                    j["description"] = ''.join(
+                        self._boss_decode_map.get(ch, ch) for ch in str(raw_desc)
+                    )
         return jobs
 
     _BOSS_PUA_MAP = {chr(0xE030 + i): str((i - 1) % 10) for i in range(1, 11)}  # U+E031→0 … U+E03A→9
