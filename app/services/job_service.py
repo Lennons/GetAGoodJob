@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Event, Job, Resume, Setting
 from app.services.settings import get_app_settings
-from app.services.text import compact_text, normalize_source_key
+from app.services.text import clean_jd_text, compact_text, normalize_source_key
 from app.services.deepseek import _salary_to_display_k
 
 
@@ -119,7 +119,7 @@ def upsert_job(
         "salary": compact_text(job_payload.get("salary"), 255),
         "salary_display": compact_text(evaluation.get("salary_display") or job_payload.get("salary_display", ""), 255),
         "city": compact_text(job_payload.get("city"), 255),
-        "description": compact_text(job_payload.get("description"), 30000),
+        "description": clean_jd_text(job_payload.get("description", "")),
         "raw": job_payload.get("raw") or job_payload,
         "score": int(evaluation.get("score") or 0),
         "decision": compact_text(evaluation.get("decision") or "review", 32),

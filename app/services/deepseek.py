@@ -8,7 +8,7 @@ import httpx
 
 from app.config import get_settings
 from app.services.resume_parser import fallback_analyze_resume
-from app.services.text import compact_text, keyword_hits
+from app.services.text import clean_jd_text, compact_text, keyword_hits
 
 
 class DeepSeekClient:
@@ -516,8 +516,8 @@ async def extract_job_keywords(job_text: str, settings: dict) -> list[dict]:
     if not client.configured:
         return _fallback_extract_keywords(job_text)
 
+    text = clean_jd_text(job_text)
     # Focus on 任职要求 section
-    text = job_text
     for marker in ["任职要求", "岗位要求", "职位要求"]:
         idx = text.find(marker)
         if idx >= 0:
@@ -561,6 +561,7 @@ def _fallback_extract_keywords(text: str) -> list[dict]:
         r"(从0到1|0到1|团队管理|跨部门|战略规划|商业思维|闭环|owner|自驱|落地|统筹|拉通|协调|执行力)",
     ]
     keywords = []
+    text = clean_jd_text(text)
     for marker in ["任职要求", "岗位要求", "职位要求"]:
         idx = text.find(marker)
         if idx >= 0:
