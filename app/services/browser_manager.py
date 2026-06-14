@@ -16,6 +16,69 @@ CHROME_DATA_DIR = Path.home() / ".boss-chat-assistant-chrome-data"
 CDP_PORT = 9223
 
 
+
+def _find_chrome() -> str:
+    """Find Chrome/Chromium executable path cross-platform."""
+    import sys
+    paths = []
+    if sys.platform == "darwin":
+        paths = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+    elif sys.platform == "win32":
+        paths = [
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+            str(Path.home() / "AppData" / "Local" / "Google" / "Chrome" / "Application" / "chrome.exe"),
+        ]
+    else:
+        paths = [
+            "google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+        ]
+    
+    for p in paths:
+        if Path(p).exists() if sys.platform != "linux" else False:
+            return p
+    # On Linux, try 'which'
+    if sys.platform != "win32":
+        for p in paths:
+            try:
+                result = subprocess.run(["which", p], capture_output=True, text=True, timeout=3)
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
+            except: pass
+    
+    return paths[0]  # fallback, let it fail with clear error
+
+
+def _kill_process_on_port(port: int) -> None:
+    """Kill any process listening on the given port. Cross-platform."""
+    import sys
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["netstat", "-ano"], capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.split("\n"):
+                if f":{port}" in line and "LISTENING" in line:
+                    parts = line.strip().split()
+                    pid = parts[-1] if parts else ""
+                    if pid.isdigit():
+                        subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+        else:
+            result = subprocess.run(
+                ["lsof", "-ti", f":{port}"], capture_output=True, text=True, timeout=5
+            )
+            for pid in result.stdout.strip().split("\n"):
+                if pid:
+                    try:
+                        subprocess.run(["kill", "-9", pid], capture_output=True)
+                    except: pass
+    except Exception:
+        pass
+
+
 class BrowserManager:
     """管理 Chrome 生命周期，固定 profile 保持登录。"""
 
@@ -67,7 +130,7 @@ class BrowserManager:
         await asyncio.sleep(1)
 
         # 3. Launch fresh Chrome with independent profile
-        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        chrome = _find_chrome()
         subprocess.Popen([
             chrome,
             f"--remote-debugging-port={CDP_PORT}",
