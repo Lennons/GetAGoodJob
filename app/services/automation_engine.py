@@ -716,6 +716,7 @@ class AutomationEngine:
                                 on_progress=on_progress,
                                 job_card=_card,
                                 pre_eval=_pre_eval,
+                                daily_limit=daily_limit,
                             )
                             self._emit("running", f"[{label}] {_msg}", on_progress)
                         except Exception as _exc:
@@ -801,6 +802,8 @@ class AutomationEngine:
                     break
                 if self._chat_count >= daily_limit:
                     self._emit("paused", f"达上限 {daily_limit}", on_progress)
+                    self._running = False
+                    stop_all = True
                     break
 
                 try:
@@ -873,6 +876,7 @@ class AutomationEngine:
                         break
                     if self._chat_count >= daily_limit:
                         self._emit("paused", f"达上限 {daily_limit}", on_progress)
+                        self._running = False
                         stop_all = True
                         self._emit("running", f"[DEBUG] 批次中断：达上限，已处理{completed_in_batch}/{batch_total}，剩余{batch_total-completed_in_batch}个不计入total", on_progress)
                         self._stats["total"] -= (batch_total - completed_in_batch)
@@ -903,6 +907,7 @@ class AutomationEngine:
                             batch_id,
                             on_progress,
                             job_card,
+                            daily_limit=daily_limit,
                         )
                         self._emit("running", msg, on_progress)
                     except Exception as exc:
@@ -1043,6 +1048,7 @@ class AutomationEngine:
         on_progress=None,
         job_card: Optional[dict] = None,
         pre_eval: Optional[dict] = None,
+        daily_limit: int = 9999,
     ) -> str:
         from app.services.deepseek import evaluate_job, generate_initial_message
 
@@ -1220,6 +1226,17 @@ class AutomationEngine:
             await detail_page.keyboard.press("Enter")
             await asyncio.sleep(2)
 
+            # 最终限额保护：如果在填消息/发送过程中触达上限，放弃发送
+            if self._chat_count >= daily_limit:
+                self._emit("paused", f"达上限 {daily_limit}，放弃最后一条", on_progress)
+                self._running = False
+                eval_result_save = dict(eval_result)
+                eval_result_save["status"] = "skipped"
+                eval_result_save["reasons"] = list(eval_result.get("reasons", [])) + ["达今日限额"]
+                await self._record_job_result(job_card, eval_result_save, batch_id)
+                self._stats["skipped"] += 1
+                await bm.close_tab(detail_page)
+                return f"[{idx+1}] 达限额，跳过 | {title}"
             self._stats["sent"] += 1
             self._chat_count += 1
             self._consecutive += 1
